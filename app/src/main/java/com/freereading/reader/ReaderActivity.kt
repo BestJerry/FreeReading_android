@@ -370,8 +370,8 @@ class ReaderActivity : FragmentActivity() {
                     val fragment = installedFragment ?: return
                     if (navigator !== fragment || fragment.view == null) return
                     audioPageReady = true
-                    // 页面就绪前 Readium 可能已缓存高亮却丢弃对应脚本；
-                    // 推进渲染代次，确保就绪后真正更新 DOM。
+                    // Readium 就绪前可能重放旧高亮却丢弃差量清除。
+                    // 就绪后让高亮器清空本组，再按最新朗读位置重绘。
                     audioHighlighter?.onPageLoaded()
                     // 常规阅读在首个可读书页显示后启动索引解码；显式听书可提前启动同一任务。
                     if (speechBook == null && speechLoad?.isCancelled != true) speechLoader().start()

@@ -34,23 +34,27 @@ internal class AudioHighlightSynchronizer(
 
     init {
         scope.launch {
-            var clearPreviousSession = true
+            var clearedPageEpoch = 0L
             for (ignored in updates) {
                 if (!ready) continue
-                if (clearPreviousSession) {
-                    // 旧视图任务取消后可能留下 DOM 标记，而 Readium 缓存已切换 ID；
-                    // 必须先清空整个高亮组，才能移除缓存之外的残留标记。
+                val renderPageEpoch = pageEpoch
+                val clearForPage = clearedPageEpoch != renderPageEpoch
+                if (clearForPage) {
+                    // Readium 会在页面就绪前重放缓存，但跳过同期的差量更新。
+                    // 缓存无法记录 DOM 里残留的旧标记，页面每次就绪都要整组清空。
                     apply(emptyList())
                     currentCoroutineContext().ensureActive()
-                    clearPreviousSession = false
-                    // 清理期间到达的更新已合并进 latestTarget，无需重复处理通知。
+                    clearedPageEpoch = renderPageEpoch
+                    // 清理期间可能又有一页就绪。保留其通知，下一轮再清理。
+                    if (renderPageEpoch != pageEpoch) continue
+                    // 在清理完成后读取最新目标，合并期间到达的换句通知。
                     updates.tryReceive()
                 }
                 val target = latestTarget
                 val requestRevision = revision
                 val decorations = target?.let {
                     listOf(Decoration(
-                        id = "speech-$session-${it.bookId}-${it.sentenceIndex}-$pageEpoch",
+                        id = "speech-$session-${it.bookId}-${it.sentenceIndex}-$renderPageEpoch",
                         locator = it.locator,
                         style = Decoration.Style.Highlight(tint = 0xFFE4CB88.toInt()),
                     ))
@@ -58,7 +62,7 @@ internal class AudioHighlightSynchronizer(
 
                 // Readium 在挂起计算差异前就更新缓存目标，因此每次 apply 都必须执行完毕。
                 // 不能通过取消旧 apply 追赶新请求，否则缓存与实际发送的 DOM 脚本会不一致。
-                apply(decorations)
+                if (target != null || !clearForPage) apply(decorations)
                 currentCoroutineContext().ensureActive()
                 if (requestRevision != revision || target == null || !pendingNavigation || !canNavigate(target)) continue
 
@@ -78,7 +82,7 @@ internal class AudioHighlightSynchronizer(
         if (ready) updates.trySend(Unit)
     }
 
-    /** 页面加载或重载后刷新渲染代次以重绘高亮，已有跳页意图保持不变。 */
+    /** 页面加载后清理 Readium 残留高亮并重绘当前句，已有跳页意图保持不变。 */
     fun onPageLoaded() {
         ready = true
         pageEpoch += 1

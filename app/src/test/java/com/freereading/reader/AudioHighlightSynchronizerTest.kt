@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -45,7 +46,7 @@ class AudioHighlightSynchronizerTest {
         assertEquals(listOf(latest.locator), navigated)
     }
 
-    @Test fun pageReloadChangesTheDecorationIdWithoutRepeatingNavigation() = runTest {
+    @Test fun pageReloadClearsBeforeRedrawingWithoutRepeatingNavigation() = runTest {
         val applied = mutableListOf<List<Decoration>>()
         val navigated = mutableListOf<Locator>()
         val synchronizer = AudioHighlightSynchronizer(backgroundScope, { applied += it }, { navigated += it }, { true })
@@ -57,13 +58,9 @@ class AudioHighlightSynchronizerTest {
         synchronizer.onPageLoaded()
         runCurrent()
 
-        assertEquals(3, applied.size)
-        assertTrue(applied[0].isEmpty())
-        assertNotEquals(applied[1].single().id, applied[2].single().id)
+        assertEquals(listOf(true, false, true, false), applied.map { it.isEmpty() })
+        assertNotEquals(applied[1].single().id, applied[3].single().id)
         assertEquals(listOf(current.locator), navigated)
-        val changes = applied[1].changesByHref(applied[2]).values.flatten()
-        assertTrue(changes.any { it is DecorationChange.Removed })
-        assertTrue(changes.any { it is DecorationChange.Added })
     }
 
     @Test fun aSlowApplyFinishesBeforeTheLatestRequestAndNeverNavigatesToTheOldSentence() = runTest {
@@ -191,9 +188,8 @@ class AudioHighlightSynchronizerTest {
         releaseFirst.complete(Unit)
         runCurrent()
 
-        assertEquals(3, applied.size)
-        assertTrue(applied[0].isEmpty())
-        assertNotEquals(applied[1].single().id, applied[2].single().id)
+        assertEquals(listOf(true, false, true, false), applied.map { it.isEmpty() })
+        assertNotEquals(applied[1].single().id, applied[3].single().id)
         assertEquals(listOf(current.locator), navigated)
     }
 
@@ -211,14 +207,13 @@ class AudioHighlightSynchronizerTest {
         synchronizer.onPageLoaded()
         runCurrent()
 
-        assertEquals(3, applied.size)
-        assertTrue(applied.first().isEmpty())
+        assertEquals(listOf(true, false, true, false), applied.map { it.isEmpty() })
         assertEquals(listOf(current.locator), navigated)
         // A real later transport request to the same sentence gets a new navigation intent.
         synchronizer.request(current)
         runCurrent()
         assertEquals(2, navigated.size)
-        assertEquals(5, applied.size)
+        assertEquals(listOf(true, false, true, false, false, true, false), applied.map { it.isEmpty() })
     }
 
     @Test fun changingToAnotherResourceRemovesTheOldResourceDecoration() = runTest {
@@ -311,6 +306,42 @@ class AudioHighlightSynchronizerTest {
         assertEquals(listOf(latest.locator), navigated)
     }
 
+    @Test fun aPageThatBecomesReadyDuringCleanupGetsItsOwnCleanupBeforeDrawing() = runTest {
+        val finishFirstClear = CompletableDeferred<Unit>()
+        val first = target(0, "first.xhtml")
+        val latest = target(2, "second.xhtml")
+        val firstPage = mutableListOf(first.locator)
+        val secondPage = mutableListOf(target(1, "second.xhtml").locator)
+        var secondPageReady = false
+        val navigated = mutableListOf<Locator>()
+        val synchronizer = AudioHighlightSynchronizer(backgroundScope, { next ->
+            // Cleanup is sent only to the pages already loaded when the operation begins.
+            val loadedPages = mutableMapOf(first.locator.href to firstPage).apply {
+                if (secondPageReady) put(latest.locator.href, secondPage)
+            }
+            if (next.isEmpty()) {
+                if (!secondPageReady) finishFirstClear.await()
+                loadedPages.values.forEach { it.clear() }
+            } else {
+                val locator = next.single().locator
+                loadedPages[locator.href]?.add(locator)
+            }
+        }, { navigated += it }, { true })
+
+        synchronizer.request(first)
+        synchronizer.onPageLoaded()
+        runCurrent()
+        secondPageReady = true
+        synchronizer.onPageLoaded()
+        synchronizer.request(latest)
+        finishFirstClear.complete(Unit)
+        runCurrent()
+
+        assertTrue(firstPage.isEmpty())
+        assertEquals(listOf(latest.locator), secondPage)
+        assertEquals(listOf(latest.locator), navigated)
+    }
+
     @Test fun restartingAfterACanceledDiffClearsDomIdsMissingFromReadiumsCache() = runTest {
         val ownerJob = Job(backgroundScope.coroutineContext[Job])
         val owner = CoroutineScope(backgroundScope.coroutineContext + ownerJob)
@@ -361,6 +392,53 @@ class AudioHighlightSynchronizerTest {
         assertEquals(latest.locator, cache.single().locator)
         assertEquals(listOf(latest.locator), dom.values.map { it.locator })
         assertEquals(listOf(first.locator, latest.locator), navigated)
+    }
+
+    @Test fun aResourceReadyClearsTheSentenceReplayedBeforeItsDiffWasAccepted() = runTest {
+        val first = target(0)
+        val latest = target(2)
+        var cache = emptyList<Decoration>()
+        val dom = mutableListOf<Decoration>()
+        var resourceReady = true
+        val applied = Channel<Decoration>(Channel.UNLIMITED)
+        val navigated = mutableListOf<Locator>()
+        val synchronizer = AudioHighlightSynchronizer(backgroundScope, { next ->
+            val previous = cache
+            // Readium updates the model even if LoadedResource skips dispatch to this WebView.
+            cache = next
+            if (resourceReady) {
+                if (next.isEmpty()) dom.clear()
+                else for (change in previous.changesByHref(next)[first.locator.href].orEmpty()) {
+                    when (change) {
+                        is DecorationChange.Added -> dom += change.decoration
+                        is DecorationChange.Removed -> dom.removeAll { it.id == change.id }
+                        else -> error("Expected a fresh decoration ID on each sentence or page change")
+                    }
+                }
+            }
+            next.singleOrNull()?.let { applied.send(it) }
+        }, { navigated += it }, { true })
+
+        synchronizer.request(first)
+        synchronizer.onPageLoaded()
+        assertEquals(first.locator, applied.receive().locator)
+        assertEquals(listOf(first.locator), dom.map { it.locator })
+        // A new WebView receives the cached highlight by direct scope before it accepts deltas.
+        resourceReady = false
+        dom.clear()
+        dom += cache
+        synchronizer.request(latest, navigate = false)
+        assertEquals(latest.locator, applied.receive().locator)
+        assertEquals(latest.locator, cache.single().locator)
+        assertEquals(listOf(first.locator), dom.map { it.locator })
+
+        resourceReady = true
+        synchronizer.onPageLoaded()
+        assertEquals(latest.locator, applied.receive().locator)
+        runCurrent()
+
+        assertEquals(listOf(latest.locator), dom.map { it.locator })
+        assertEquals(listOf(first.locator), navigated)
     }
 
     private fun target(index: Int, href: String = "chapter.xhtml") = AudioHighlightSynchronizer.Target(
