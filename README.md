@@ -4,14 +4,14 @@ FreeReading 是使用 **Kotlin 和 Jetpack Compose** 开发的 Android 原生本
 
 项目仓库：[BestJerry/FreeReading_android](https://github.com/BestJerry/FreeReading_android)。
 
-当前版本：**0.1.11**。支持 **Android 8.0（API 26）及以上**。
+当前版本：**0.1.12**。支持 **Android 8.0（API 26）及以上**。
 
 ## 下载安装
 
-已发布的测试安装包为 **v0.1.11**。下方「快速使用」描述当前源码行为。
+**v0.1.12** 修复了偶发两句同时高亮的问题。朗读时自动跟随原文，手动翻页后等下一句实际开始播放再定位。
 
-- [下载 v0.1.11 Android APK](https://github.com/BestJerry/FreeReading_android/releases/download/v0.1.11/FreeReading-v0.1.11.apk)
-- [版本说明与 SHA-256 校验文件](https://github.com/BestJerry/FreeReading_android/releases/tag/v0.1.11)
+- [下载 v0.1.12 Android APK](https://github.com/BestJerry/FreeReading_android/releases/download/v0.1.12/FreeReading-v0.1.12.apk)
+- [版本说明与 SHA-256 校验文件](https://github.com/BestJerry/FreeReading_android/releases/tag/v0.1.12)
 
 下载 APK 后，按 Android 系统提示允许该下载来源安装应用，即可安装。当前发布的是 **Debug 签名测试包**；同签名的已有测试版可覆盖安装，保留书架与进度。听书需在系统语音设置中安装对应语言的离线音色。本轮通过本地单测、构建和静态检查，未进行真机复测。
 
@@ -130,6 +130,12 @@ JAVA_HOME=/path/to/jdk17 ./gradlew -Dorg.gradle.java.home=/path/to/jdk17 :app:as
 - `docs/`：故障诊断、修复边界与验证记录。
 
 ## 验证状态
+
+0.1.12 的本地验证：
+
+- 全量 52 个测试类、524 条单测通过，无失败或跳过。Debug APK 构建成功，Lint 无错误且警告数量未增加。
+- 使用 Readium 原版脚本验证双高亮的复现与清除。回归覆盖页面就绪时清理旧句、清理期间另一页也就绪、快速切句和手动翻页后的下一句定位。
+- APK 为 0.1.12（版本码 13），与 v0.1.11 使用相同签名。发布附件包含 SHA-256 校验文件。
 
 0.1.11 的本地验证：
 
