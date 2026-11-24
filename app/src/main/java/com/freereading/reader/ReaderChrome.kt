@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
@@ -54,7 +53,6 @@ internal fun ReaderChrome(
     readingProgress: Float?,
     controlsVisible: Boolean,
     hasAudio: Boolean,
-    followingAudio: Boolean,
     isPlaying: Boolean,
     isPreparing: Boolean,
     enabled: Boolean,
@@ -65,7 +63,6 @@ internal fun ReaderChrome(
     onContents: () -> Unit,
     onAppearance: () -> Unit,
     onListen: () -> Unit,
-    onFollowToggle: () -> Unit,
     onToggleControls: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -84,13 +81,6 @@ internal fun ReaderChrome(
         isPlaying -> "正在播放"
         else -> "已暂停"
     }
-    val followState = when {
-        !followingAudio -> "已暂停跟随，$audioState"
-        isPreparing -> "已开启，正在准备语音"
-        isPlaying -> "播放时自动翻页"
-        else -> "已开启，听书已暂停"
-    }
-
     // 外层不能添加背景、clickable 或 pointerInput；中央透明区域必须让底层 Readium
     // 接收滑动、菜单轻触和文字选择，只有实际控件区域拦截触摸。
     Box(modifier.fillMaxSize().testTag("reader_chrome")) {
@@ -185,23 +175,6 @@ internal fun ReaderChrome(
                         if (percent != null) {
                             Spacer(Modifier.width(10.dp))
                             Text("全书 $percent%", color = muted, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1)
-                        }
-                    }
-                    if (hasAudio) {
-                        Spacer(Modifier.width(10.dp))
-                        Row(
-                            Modifier.fillMaxHeight().widthIn(max = 104.dp).testTag("reader_audio_follow")
-                                .clickable(enabled = enabled, role = Role.Button, onClick = onFollowToggle)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = if (followingAudio) "暂停自动翻页" else "跟随朗读自动翻页"
-                                    stateDescription = followState
-                                }.padding(horizontal = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(if (followingAudio) "自动翻页" else "继续跟随",
-                                color = if (enabled) accent else muted,
-                                fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1,
-                                softWrap = false, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (hasAudio && !controlsVisible) {

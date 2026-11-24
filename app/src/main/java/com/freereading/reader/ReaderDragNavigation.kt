@@ -3,7 +3,7 @@ package com.freereading.reader
 import kotlin.math.abs
 import org.readium.r2.navigator.input.DragEvent
 
-/** 使用系统触摸阈值识别主动浏览，避免轻微触摸就中断听书自动翻页。 */
+/** 使用系统触摸阈值识别主动浏览，避免把轻微触摸误当作手动翻页。 */
 internal class ReaderDragNavigation(private val touchSlop: Float) {
     init {
         require(touchSlop.isFinite() && touchSlop >= 0f)
@@ -12,7 +12,7 @@ internal class ReaderDragNavigation(private val touchSlop: Float) {
     private var active = false
     private var reported = false
 
-    /** 一次拖动只报告一次脱离；分页检测横向移动，滚动模式也检测纵向浏览。 */
+    /** 一次拖动只报告一次手动导航；分页检测横向移动，滚动模式也检测纵向浏览。 */
     fun shouldDetach(event: DragEvent, scroll: Boolean): Boolean {
         if (event.type == DragEvent.Type.Start) {
             active = true

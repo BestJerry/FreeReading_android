@@ -52,36 +52,6 @@ class ReaderSurfacesTest {
         compose.runOnIdle { assertEquals(listOf("listen"), events) }
     }
 
-    @Test fun activeReadingShowsAutomaticPageTurningAndCanPauseFollowing() {
-        val events = showChrome(hasAudio = true)
-
-        compose.onNodeWithTag("reader_audio_follow").assertIsDisplayed().assertIsEnabled()
-            .assertTextEquals("自动翻页")
-            .assertContentDescriptionEquals("暂停自动翻页")
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "播放时自动翻页"))
-            .performClick()
-        compose.onNodeWithTag("reader_audio_follow").assertTextEquals("继续跟随")
-            .assertContentDescriptionEquals("跟随朗读自动翻页")
-        compose.onNodeWithTag("reader_listen_shortcut").assertIsDisplayed()
-        assertNoFullPlayerControls()
-
-        compose.runOnIdle { assertEquals(listOf("follow"), events) }
-    }
-
-    @Test fun detachedReadingCanResumeFollowingWithoutOpeningThePlayer() {
-        val events = showChrome(hasAudio = true, followingAudio = false, isPlaying = false)
-
-        compose.onNodeWithTag("reader_audio_follow").assertTextEquals("继续跟随")
-            .assertContentDescriptionEquals("跟随朗读自动翻页")
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "已暂停跟随，已暂停"))
-            .performClick()
-        compose.onNodeWithTag("reader_audio_follow").assertTextEquals("自动翻页")
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "已开启，听书已暂停"))
-        compose.onNodeWithTag("listening-screen").assertDoesNotExist()
-
-        compose.runOnIdle { assertEquals(listOf("follow"), events) }
-    }
-
     @Test fun readingWithoutActiveAudioDoesNotOfferAutomaticPageTurning() {
         showChrome()
 
@@ -124,7 +94,7 @@ class ReaderSurfacesTest {
 
         compose.onNodeWithTag("reader_controls_toggle").assertIsNotEnabled()
         compose.onNodeWithTag("reader_chrome_menu").assertDoesNotExist()
-        compose.onNodeWithTag("reader_audio_follow").assertIsNotEnabled()
+        compose.onNodeWithTag("reader_audio_follow").assertDoesNotExist()
         compose.onNodeWithTag("reader_listen_shortcut").assertIsEnabled().performClick()
 
         compose.runOnIdle { assertEquals(listOf("listen"), events) }
@@ -136,7 +106,7 @@ class ReaderSurfacesTest {
         listOf("reader_controls_toggle", "reader_contents", "reader_appearance")
             .forEach { compose.onNodeWithTag(it).assertIsNotEnabled() }
         compose.onNodeWithTag("reader_listen_shortcut").assertDoesNotExist()
-        compose.onNodeWithTag("reader_audio_follow").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithTag("reader_audio_follow").assertDoesNotExist()
         compose.onNodeWithTag("reader_listen").assertIsEnabled().performClick()
 
         compose.runOnIdle { assertEquals(listOf("listen"), events) }
@@ -177,43 +147,20 @@ class ReaderSurfacesTest {
         compose.runOnIdle { assertEquals(listOf("listen"), events) }
     }
 
-    @Test fun automaticPageTurningControlStaysInsideTheTwentyEightDpFooter() {
-        val events = showChrome(hasAudio = true)
-        val root = compose.onNodeWithTag("reader_chrome").fetchSemanticsNode().boundsInRoot
-        val follow = compose.onNodeWithTag("reader_audio_follow").fetchSemanticsNode().boundsInRoot
-        val footer = compose.onNodeWithTag("reader_chrome_footer").fetchSemanticsNode().boundsInRoot
-        val outsideDistance = 5f * compose.density.density
-        compose.onNodeWithTag("reader_chrome_footer").assertHeightIsEqualTo(28.dp)
-        assertEquals(footer.top, follow.top, 0.5f)
-        assertEquals(footer.bottom, follow.bottom, 0.5f)
-
-        compose.onNodeWithTag("reader_chrome").performTouchInput {
-            click(Offset(follow.center.x - root.left, follow.top - root.top - outsideDistance))
-        }
-        compose.runOnIdle { assertEquals(emptyList<String>(), events) }
-        compose.onNodeWithTag("reader_chrome").performTouchInput {
-            click(Offset(follow.center.x - root.left, follow.center.y - root.top))
-        }
-        compose.runOnIdle { assertEquals(listOf("follow"), events) }
-    }
-
     @Test
     @Config(qualifiers = "w360dp-h800dp")
-    fun narrowReadingWithLargeTextKeepsBothFooterAudioActionsVisible() {
+    fun narrowReadingWithLargeTextKeepsListeningShortcutVisible() {
         val events = showChrome(hasAudio = true, isPlaying = false, isPreparing = true, fontScale = 1.8f)
 
         compose.onNodeWithTag("reader_chrome_footer").assertHeightIsEqualTo(28.dp)
-        compose.onNodeWithTag("reader_audio_follow").assertIsDisplayed().assertTextEquals("自动翻页")
-            .assertHeightIsEqualTo(28.dp)
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "已开启，正在准备语音"))
+        compose.onNodeWithTag("reader_audio_follow").assertDoesNotExist()
         compose.onNodeWithTag("reader_listen_shortcut").assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithTag("reader_controls_toggle").performClick()
-        compose.onNodeWithTag("reader_audio_follow").assertIsDisplayed().performClick()
         compose.onNodeWithTag("reader_chrome_toolbar").assertIsDisplayed()
         listOf("reader_contents", "reader_listen", "reader_appearance")
             .forEach { compose.onNodeWithTag(it).assertIsDisplayed() }
 
-        compose.runOnIdle { assertEquals(listOf("toggle-tools", "follow"), events) }
+        compose.runOnIdle { assertEquals(listOf("toggle-tools"), events) }
     }
 
     @Test fun closingListeningReturnsToReadingWithoutStoppingThePlayingBook() {
@@ -234,14 +181,25 @@ class ReaderSurfacesTest {
         clickListening("播放速度")
         compose.onNodeWithText("1.5×").performClick()
         clickListening("从阅读位置开始听书")
-        compose.onNodeWithContentDescription("跟随原文").performScrollTo().assertIsOn().performClick()
+        compose.onNodeWithContentDescription("跟随原文").assertDoesNotExist()
         clickListening("定位正在朗读的原文")
         clickListening("结束听书")
 
         compose.runOnIdle {
             assertEquals(listOf("toggle", "seek:-15000", "seek:15000", "speed:1.5",
-                "from-reading", "follow", "locate", "stop"), events)
+                "from-reading", "locate", "stop"), events)
         }
+    }
+
+    @Test fun pausedSynthesisShowsThePlayActionInsteadOfThePreparingState() {
+        val events = showListening(snapshot = sampleSnapshot().copy(
+            isPlaying = false, isPreparing = true, wantsPlayback = false))
+
+        compose.onNodeWithText("已暂停").assertIsDisplayed()
+        compose.onNodeWithText("正在准备语音…").assertDoesNotExist()
+        compose.onNodeWithContentDescription("暂停听书").assertDoesNotExist()
+        clickListening("开始或继续听书")
+        compose.runOnIdle { assertEquals(listOf("toggle"), events) }
     }
 
     @Test fun inactiveBookOffersStartButCannotControlAnotherBooksAudioOrExposeItsProgress() {
@@ -251,7 +209,7 @@ class ReaderSurfacesTest {
         compose.onNodeWithText("第七章 山间").assertDoesNotExist()
         compose.onNodeWithContentDescription("章节播放进度").performScrollTo()
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "—"))
-        listOf("快退15秒", "快进15秒", "上一章", "下一章", "播放速度", "跟随原文", "定位正在朗读的原文", "结束听书", "选择朗读音色")
+        listOf("快退15秒", "快进15秒", "上一章", "下一章", "播放速度", "定位正在朗读的原文", "结束听书", "选择朗读音色")
             .forEach { compose.onNodeWithContentDescription(it).assertIsNotEnabled() }
         clickListening("开始或继续听书")
         clickListening("从阅读位置开始听书")
@@ -318,7 +276,7 @@ class ReaderSurfacesTest {
     }
 
     @Test fun aPausedBookCanRequestAChapterWithoutAnOptimisticPlaybackToggle() {
-        val events = showListening(snapshot = sampleSnapshot().copy(isPlaying = false))
+        val events = showListening(snapshot = sampleSnapshot().copy(isPlaying = false, wantsPlayback = false))
 
         clickListening("下一章")
 
@@ -367,7 +325,7 @@ class ReaderSurfacesTest {
     }
 
     @Test fun anotherBooksSessionPreventsChangingItsVoicesFromThisBook() {
-        val events = showListening(activeBook = false, snapshot = sampleSnapshot().copy(isPlaying = false))
+        val events = showListening(activeBook = false, snapshot = sampleSnapshot().copy(isPlaying = false, wantsPlayback = false))
 
         compose.onNodeWithContentDescription("选择朗读音色").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("开始本书听书后可选择音色").assertIsDisplayed()
@@ -409,7 +367,7 @@ class ReaderSurfacesTest {
         val events = showListening(enabled = false, snapshot = sampleSnapshot().copy(
             error = "缺少离线语音数据", needsVoiceData = true))
 
-        listOf("跟随原文", "定位正在朗读的原文", "从阅读位置开始听书")
+        listOf("定位正在朗读的原文", "从阅读位置开始听书")
             .forEach { compose.onNodeWithContentDescription(it).assertIsNotEnabled() }
         clickListening("暂停听书")
         clickListening("快退15秒")
@@ -430,7 +388,7 @@ class ReaderSurfacesTest {
         val events = showListening(activeBook = false, enabled = false,
             snapshot = sampleSnapshot().copy(error = "其他书的离线语音错误", needsVoiceData = true))
 
-        listOf("开始或继续听书", "快退15秒", "快进15秒", "上一章", "下一章", "播放速度", "跟随原文",
+        listOf("开始或继续听书", "快退15秒", "快进15秒", "上一章", "下一章", "播放速度",
             "定位正在朗读的原文", "从阅读位置开始听书", "结束听书", "选择朗读音色")
             .forEach { compose.onNodeWithContentDescription(it).assertIsNotEnabled() }
         compose.onNodeWithContentDescription("安装或设置离线语音").assertDoesNotExist()
@@ -440,7 +398,7 @@ class ReaderSurfacesTest {
     }
 
     @Test fun missingOfflineVoiceHasAnActionableSettingsControl() {
-        val events = showListening(snapshot = sampleSnapshot().copy(isPlaying = false,
+        val events = showListening(snapshot = sampleSnapshot().copy(isPlaying = false, wantsPlayback = false,
             error = "缺少离线语音数据", needsVoiceData = true))
 
         compose.onNodeWithText("缺少离线语音数据").performScrollTo().assertIsDisplayed()
@@ -490,25 +448,22 @@ class ReaderSurfacesTest {
         controlsVisible: Boolean = false,
         hasAudio: Boolean = false,
         enabled: Boolean = true,
-        followingAudio: Boolean = true,
         isPlaying: Boolean = true,
         isPreparing: Boolean = false,
         fontScale: Float = 1f,
     ): MutableList<String> {
         val events = mutableListOf<String>()
         var visible by mutableStateOf(controlsVisible)
-        var following by mutableStateOf(followingAudio)
         compose.setContent {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
                 FreeReadingTheme {
                     ReaderChrome(title = "山间来信", chapter = "第七章 山间", readingProgress = 0.6f,
-                        controlsVisible = visible, hasAudio = hasAudio, followingAudio = following,
+                        controlsVisible = visible, hasAudio = hasAudio,
                         isPlaying = isPlaying, isPreparing = isPreparing,
                         enabled = enabled, paper = Paper, ink = Ink, accent = Forest,
                         onBack = { events += "back" }, onContents = { events += "contents" },
                         onAppearance = { events += "appearance" }, onListen = { events += "listen" },
-                        onFollowToggle = { following = !following; events += "follow" },
                         onToggleControls = { visible = !visible; events += "toggle-tools" })
                 }
             }
@@ -532,11 +487,11 @@ class ReaderSurfacesTest {
             CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
                 FreeReadingTheme {
                     ListeningPlayerScreen(bookTitle = snapshot.bookTitle, author = "示例作者", coverPath = null,
-                        snapshot = snapshot, activeBook = activeBook, enabled = enabled, followAudio = true,
+                        snapshot = snapshot, activeBook = activeBook, enabled = enabled,
                         paper = paper, ink = ink, accent = accent,
                         onClose = { events += "close" }, onToggle = { events += "toggle" },
                         onSeek = { events += "seek:$it" }, onSpeed = { events += "speed:$it" },
-                        onFromReading = { events += "from-reading" }, onFollowToggle = { events += "follow" },
+                        onFromReading = { events += "from-reading" },
                         onLocate = { events += "locate" }, onStop = { events += "stop" },
                         onVoiceSettings = { events += "voice-settings" }, voiceState = voiceState,
                         onLoadVoices = { events += "load-voices" }, onSelectVoice = { events += "voice:$it" },
@@ -551,7 +506,7 @@ class ReaderSurfacesTest {
     private fun sampleSnapshot() = PlaybackSnapshot(bookId = "book-a", bookTitle = "山间来信",
         sentenceIndex = 12, sentenceCount = 80, chapterTitle = "第七章 山间", text = SpokenText,
         positionMs = 5_000, durationMs = 10_000, chapterProgress = 0.37f,
-        chapterSentenceCount = 20, isPlaying = true,
+        chapterSentenceCount = 20, isPlaying = true, wantsPlayback = true,
         canGoToPreviousChapter = true, canGoToNextChapter = true)
 
     private companion object { const val SpokenText = "沿着山路，我们听见了风穿过树林的声音。" }

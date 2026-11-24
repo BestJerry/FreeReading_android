@@ -140,9 +140,6 @@ class ReaderActivity : FragmentActivity() {
     private var showAppearance by mutableStateOf(false)
     private var showReadingControls by mutableStateOf(false)
     private var showListening by mutableStateOf(false)
-    // 每次明确起播／恢复时开启；本次播放中仍允许关闭或手动浏览暂时脱离。
-    private var followAudio by mutableStateOf(true)
-    private var handledFollowRequestId: String? = null
     private var fontScale by mutableStateOf(1.15f)
     private var pageStyle by mutableStateOf("paper")
     private var scroll by mutableStateOf(false)
@@ -158,8 +155,6 @@ class ReaderActivity : FragmentActivity() {
     private var chapterAnchors: List<SentenceLocatorMatcher.Anchor> = emptyList()
     private var readingOrderHrefs: List<String> = emptyList()
     private var readingPlaybackIntent by mutableStateOf(ReadingPlaybackIntent.CONTINUE_AUDIO)
-    private val followingAudio: Boolean
-        get() = followAudio && readingPlaybackIntent == ReadingPlaybackIntent.CONTINUE_AUDIO
     private val dragNavigation by lazy {
         ReaderDragNavigation(ViewConfiguration.get(this).scaledTouchSlop.toFloat())
     }
@@ -171,14 +166,22 @@ class ReaderActivity : FragmentActivity() {
     private var audioBinding: Job? = null
     private var audioHighlighter: AudioHighlightSynchronizer? = null
     private var audioPageReady = false
+    private var locateAudioRequested = false
+    private var deferredAudioFollow: DeferredAudioFollow? = null
+    private var selectionMode: ActionMode? = null
     private val sourceResolverMutex = Mutex()
     private var sourceResolver: Pair<String, SourceSentenceResolver>? = null
     /** 绑定视觉页与导航代次的可见文本快照，供 WebView 销毁前后的进度保存复用。 */
     private data class VisibleTextSnapshot(val page: Locator, val textAnchor: Locator, val revision: Long)
     /** 仅保留影响原文同步的播放状态，过滤仅句内音频时间变化的重复同步。 */
     private data class AudioCursor(val bookId: String?, val sentenceIndex: Int, val sentenceCount: Int,
-                                   val playing: Boolean, val preparing: Boolean, val sessionId: String?,
-                                   val failedStartId: String?, val followRequestId: String?)
+                                   val wantsPlayback: Boolean, val playing: Boolean, val sessionId: String?,
+                                   val failedStartId: String?)
+    /** 记住手动翻页时正在朗读的句子，下一句准备语音期间仍保留手动位置。 */
+    private data class DeferredAudioFollow(val sessionId: String?, val spokenSentence: Int?) {
+        fun delays(audio: PlaybackSnapshot): Boolean = audio.playbackSessionId == sessionId &&
+            audio.wantsPlayback && (!audio.isPlaying || audio.sentenceIndex == spokenSentence)
+    }
     private var visibleTextSnapshot: VisibleTextSnapshot? = null
 
     private val paper: Color get() = when (pageStyle) {
@@ -193,8 +196,6 @@ class ReaderActivity : FragmentActivity() {
     /** 恢复阅读意图与未确认的起播请求，再重新打开本地书籍并创建导航视图。 */
     override fun onCreate(savedInstanceState: Bundle?) {
         restoredLocator = savedInstanceState?.getString(STATE_LOCATOR)
-        followAudio = savedInstanceState?.getBoolean(STATE_FOLLOW, true) ?: true
-        handledFollowRequestId = savedInstanceState?.getString(STATE_FOLLOW_REQUEST)
         readingPlaybackIntent = savedInstanceState?.getString(STATE_PLAYBACK_INTENT)?.let {
             runCatching { ReadingPlaybackIntent.valueOf(it) }.getOrNull()
         } ?: ReadingPlaybackIntent.CONTINUE_AUDIO
@@ -203,6 +204,11 @@ class ReaderActivity : FragmentActivity() {
             ?.takeIf(PlaybackHub::isCurrentPlaybackSessionId)
         pendingAudioSentence = savedInstanceState?.getInt(STATE_PENDING_AUDIO_SENTENCE, -1)
             ?.takeIf { it >= 0 && pendingAudioRequestId != null }
+        deferredAudioFollow = savedInstanceState?.getBundle(STATE_DEFERRED_AUDIO_FOLLOW)?.let { saved ->
+            saved.getString("session")?.takeIf(PlaybackHub::isCurrentPlaybackSessionId)?.let { session ->
+                DeferredAudioFollow(session, saved.getInt("sentence", -1).takeIf { it >= 0 })
+            }
+        }
         showReadingControls = savedInstanceState?.getBoolean(STATE_READING_CONTROLS, false) ?: false
         showListening = savedInstanceState?.getBoolean(STATE_LISTENING)
             ?: intent.getBooleanExtra(EXTRA_OPEN_PLAYER, false)
@@ -308,25 +314,24 @@ class ReaderActivity : FragmentActivity() {
         publication = opened
         readingOrderHrefs = opened.readingOrder.map { it.url().removeFragment().toString() }
         val audio = PlaybackHub.state.value
-        restoreFollowForPlaybackStart(audio)
         acknowledgeAudioStart(audio)
         resumableProgress = resolveReadingResumeProgress(record, saved, pendingStoppedProgress,
             audio.bookId, readingPlaybackIntent, cachedBook)
         val stoppedLocator = resumableProgress?.takeIf { pendingStoppedProgress != null }?.locatorJson
         val pendingAudioLocator = pendingAudioSentence?.let { cachedBook?.sentences?.getOrNull(it)?.locatorJson }
         val initial = when {
+            pendingAudioLocator != null -> pendingAudioLocator
+            canFollowAudio(audio) -> cachedBook?.sentences?.getOrNull(audio.sentenceIndex)?.locatorJson
+                ?: restoredLocator ?: saved.locatorJson
             readingPlaybackIntent == ReadingPlaybackIntent.RETRY_AUDIO_START && stoppedLocator != null ->
                 restoredLocator ?: stoppedLocator
-            followingAudio && pendingAudioLocator != null -> pendingAudioLocator
-            followingAudio && stoppedLocator != null -> stoppedLocator
-            followingAudio && audio.bookId == bookId && audio.sentenceCount > 0 ->
-                cachedBook?.sentences?.getOrNull(audio.sentenceIndex)?.locatorJson ?: restoredLocator ?: saved.locatorJson
+            readingPlaybackIntent == ReadingPlaybackIntent.CONTINUE_AUDIO && stoppedLocator != null -> stoppedLocator
             restoredLocator != null -> restoredLocator
             else -> saved.locatorJson
         }?.let(::parseLocator)
         lateInitialStopRevision = readingNavigationRevision.takeIf {
             cachedBook == null && pendingStoppedProgress?.bookId == bookId && stoppedLocator == null &&
-                followingAudio && (readingPlaybackIntent != ReadingPlaybackIntent.RETRY_AUDIO_START || restoredLocator == null)
+                readingPlaybackIntent == ReadingPlaybackIntent.CONTINUE_AUDIO
         }
         visibleLocator = initial
         if (cachedBook == null) speechLoader()
@@ -435,7 +440,7 @@ class ReaderActivity : FragmentActivity() {
                 PlaybackHub.state.value.bookId, readingPlaybackIntent)
             pendingStoppedProgress = normalized
             if (resumableProgress != null) resumableProgress = normalized
-            if (lateInitialStopRevision == readingNavigationRevision && followingAudio) {
+            if (lateInitialStopRevision == readingNavigationRevision && !canFollowAudio(PlaybackHub.state.value)) {
                 normalized?.locatorJson?.let(::parseLocator)?.let { navigator?.go(it, animated = false) }
             }
         }
@@ -487,12 +492,19 @@ class ReaderActivity : FragmentActivity() {
                     val synchronizer = AudioHighlightSynchronizer(
                         scope = this,
                         apply = { fragment.applyDecorations(it, group = "speech") },
-                        navigate = { fragment.go(it, animated = false) },
+                        navigate = {
+                            locateAudioRequested = false
+                            readingPlaybackIntent = ReadingPlaybackIntent.CONTINUE_AUDIO
+                            requestedReadingStart = null
+                            resumableProgress = null
+                            pendingStoppedProgress = null
+                            fragment.go(it, animated = false)
+                        },
                         canNavigate = { target ->
                             val audio = PlaybackHub.state.value
-                            navigator === fragment && fragment.view != null && followingAudio &&
+                            navigator === fragment && fragment.view != null &&
                                 owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
-                                pendingAudioSentence == null &&
+                                canFollowAudio(audio, locateAudioRequested) &&
                                 audio.bookId == target.bookId && audio.sentenceIndex == target.sentenceIndex
                         },
                     )
@@ -502,8 +514,7 @@ class ReaderActivity : FragmentActivity() {
                         PlaybackHub.state
                             // 同一句的重新起播或恢复也要追赶原文页，不能只比较句子编号。
                             .map { AudioCursor(it.bookId, it.sentenceIndex, it.sentenceCount,
-                                it.isPlaying, it.isPreparing, it.playbackSessionId,
-                                it.startFailure?.requestId, it.followRequestId) }
+                                it.wantsPlayback, it.isPlaying, it.playbackSessionId, it.startFailure?.requestId) }
                             .distinctUntilChanged()
                             .collect { synchronizeAudio() }
                     } finally {
@@ -514,35 +525,27 @@ class ReaderActivity : FragmentActivity() {
         }
     }
 
-    /** 按当前朗读句请求更新或清除高亮；开启跟随时请求跳页，执行前仍须通过会话与页面校验。 */
+    /** 朗读时跟随当前句；暂停时仅保留高亮，用户也可主动定位一次。 */
     private fun synchronizeAudio() {
         val audio = PlaybackHub.state.value
-        restoreFollowForPlaybackStart(audio)
         acknowledgeAudioStart(audio)
+        if (audio.bookId != bookId) locateAudioRequested = false
+        if (audio.bookId != bookId || deferredAudioFollow?.delays(audio) == false) {
+            deferredAudioFollow = null
+        }
         val synchronizer = audioHighlighter ?: return
         val sentence = speechBook?.sentences?.getOrNull(audio.sentenceIndex)
             ?.takeIf { audio.bookId == bookId && audio.sentenceCount > 0 }
         val locator = sentence?.locatorJson?.let(::parseLocator)
         val target = locator?.let { AudioHighlightSynchronizer.Target(bookId, audio.sentenceIndex, it) }
-        synchronizer.request(target, navigate = followingAudio)
+        synchronizer.request(target, navigate = canFollowAudio(audio, locateAudioRequested))
     }
 
-    /** 消费显式起播事件；不取消正文起播任务，也不从自然换句的播放状态推断恢复跟随。 */
-    private fun restoreFollowForPlaybackStart(audio: PlaybackSnapshot) {
-        val request = audio.followRequestId ?: return
-        if (audio.bookId != bookId || !PlaybackHub.isNewerFollowRequest(request, handledFollowRequestId)) return
-        handledFollowRequestId = request
-        followAudio = true
-        readingPlaybackIntent = ReadingPlaybackIntent.CONTINUE_AUDIO
-        requestedReadingStart = null
-        resumableProgress = null
-        pendingStoppedProgress = null
-    }
-
-    /** 手动操作记录提交顺序水位，已提交但尚未被服务接收的旧命令也不能再覆盖这次操作。 */
-    private fun acknowledgeCurrentFollowRequest() {
-        handledFollowRequestId = PlaybackHub.newFollowRequestId()
-    }
+    /** 手动翻页后等下一句实际开播；执行异步跳页前也使用同一条件复核。 */
+    private fun canFollowAudio(audio: PlaybackSnapshot, locate: Boolean = false): Boolean =
+        audio.bookId == bookId && audio.sentenceCount > 0 &&
+            (locate || (audio.wantsPlayback && deferredAudioFollow?.delays(audio) != true)) &&
+            pendingAudioSentence == null && readingStartJob?.isActive != true && selectionMode == null
 
     /** 按请求 ID 确认起播或记录失败；确认之前不让旧播放状态抢回用户选择的页面。 */
     private fun acknowledgeAudioStart(audio: PlaybackSnapshot) {
@@ -701,48 +704,64 @@ class ReaderActivity : FragmentActivity() {
             }
         }
 
-    /** 主动翻页、目录跳转或选文后临时脱离跟随，并将下一次起播改为新阅读位置。 */
+    /** 手动翻页时保留新页面，等下一句真正播放再定位。 */
     private fun markManualNavigation() {
-        acknowledgeCurrentFollowRequest()
+        val audio = PlaybackHub.state.value
+        deferredAudioFollow = if (audio.bookId == bookId && audio.wantsPlayback) {
+            deferredAudioFollow?.takeIf { it.delays(audio) } ?: DeferredAudioFollow(
+                audio.playbackSessionId, audio.sentenceIndex.takeIf { audio.isPlaying })
+        } else null
+        markReadingPositionChanged(audio)
+    }
+
+    /** 朗读中临时浏览保留继续音频的意图；暂停后浏览才改用新阅读位置起播。 */
+    private fun markReadingPositionChanged(audio: PlaybackSnapshot = PlaybackHub.state.value) {
+        locateAudioRequested = false
         showReadingControls = false
         cancelReadingStart()
         clearPendingAudioStart()
-        readingPlaybackIntent = ReadingPlaybackIntent.FROM_READING_LOCATION
+        readingPlaybackIntent = if (audio.bookId == bookId && audio.wantsPlayback) {
+            ReadingPlaybackIntent.CONTINUE_AUDIO
+        } else {
+            ReadingPlaybackIntent.FROM_READING_LOCATION
+        }
         requestedReadingStart = null
         resumableProgress = null
         pendingStoppedProgress = null
     }
 
-    /** 放弃旧阅读定位与失败重试游标，重新跟随当前音频并恢复自动翻页。 */
-    private fun followCurrentAudio() {
-        acknowledgeCurrentFollowRequest()
+    /** 一次性定位当前朗读句；暂停时也可以回到音频游标。 */
+    private fun locateCurrentAudio() {
         cancelReadingStart()
         clearPendingAudioStart()
-        if (readingPlaybackIntent == ReadingPlaybackIntent.RETRY_AUDIO_START) {
-            resumableProgress = null
-            pendingStoppedProgress = null
-        }
-        readingPlaybackIntent = ReadingPlaybackIntent.CONTINUE_AUDIO
-        requestedReadingStart = null
-        followAudio = true
+        deferredAudioFollow = null
+        locateAudioRequested = true
         synchronizeAudio()
     }
 
-    /** 关闭跟随只改变偏好，不改变播放起点；重新开启时请求定位到当前朗读句。 */
-    private fun toggleAudioFollow() {
-        if (followingAudio) {
-            acknowledgeCurrentFollowRequest()
-            followAudio = false
-            synchronizeAudio()
-        } else {
-            followCurrentAudio()
+    private fun launchReadingStart(start: suspend () -> Unit) {
+        val previous = readingStartJob
+        readingStartJob = null
+        previous?.cancel()
+        val job = lifecycleScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                start()
+            } finally {
+                if (readingStartJob === coroutineContext[Job]) {
+                    readingStartJob = null
+                    synchronizeAudio()
+                }
+            }
         }
+        readingStartJob = job
+        job.start()
     }
 
     /** 取消未完成的正文起播查询并递增导航代次，让所有迟到定位结果失效。 */
     private fun cancelReadingStart() {
-        readingStartJob?.cancel()
+        val previous = readingStartJob
         readingStartJob = null
+        previous?.cancel()
         readingNavigationRevision += 1
         visibleTextSnapshot = null
     }
@@ -811,12 +830,11 @@ class ReaderActivity : FragmentActivity() {
         resumableProgress = null
         pendingStoppedProgress = null
         val revision = readingNavigationRevision
-        readingStartJob?.cancel()
-        readingStartJob = lifecycleScope.launch {
+        launchReadingStart {
             try {
                 if (speechBook == null) toast("正在准备听书…")
                 awaitSpeechBook()
-                if (revision != readingNavigationRevision || navigator !== fragment) return@launch
+                if (revision != readingNavigationRevision || navigator !== fragment) return@launchReadingStart
                 val sentence = if (requested != null) {
                     val id = requested.locations.fragments.firstOrNull()
                     val anchor = if (id != null) SourceSpeechAnchor.Fragment(id) else SourceSpeechAnchor.ResourceStart
@@ -825,7 +843,7 @@ class ReaderActivity : FragmentActivity() {
                     val page = fragment.currentLocator.value
                     freshVisibleTextAnchor(fragment, page)?.let(::sentenceAt)
                 }
-                if (revision != readingNavigationRevision) return@launch
+                if (revision != readingNavigationRevision) return@launchReadingStart
                 if (sentence == null) {
                     toast("当前位置暂无可朗读文字，请选择有正文的章节或长按文字开始听书。")
                 } else {
@@ -864,7 +882,6 @@ class ReaderActivity : FragmentActivity() {
         pendingAudioSentence = progress.sentenceIndex
         pendingAudioRequestId = requestId
         readingPlaybackIntent = ReadingPlaybackIntent.CONTINUE_AUDIO
-        followAudio = true
         requestedReadingStart = null
         if (!PlaybackHub.playBook(this, bookId, progress.sentenceIndex, progress.audioOffsetMs, requestId)) {
             audioStartFailed(progress)
@@ -886,12 +903,11 @@ class ReaderActivity : FragmentActivity() {
             playFromReadingLocation()
         } else if (speechBook == null && navigator != null) {
             val revision = readingNavigationRevision
-            readingStartJob?.cancel()
-            readingStartJob = lifecycleScope.launch {
+            launchReadingStart {
                 try {
                     toast("正在准备听书…")
                     awaitSpeechBook()
-                    if (revision != readingNavigationRevision || resumableProgress == null) return@launch
+                    if (revision != readingNavigationRevision || resumableProgress == null) return@launchReadingStart
                     val ready = resumableProgress ?: saved
                     resumableProgress = null
                     pendingStoppedProgress = null
@@ -912,7 +928,8 @@ class ReaderActivity : FragmentActivity() {
     /** 在系统选文菜单增加起播入口，查询与索引加载期间继续校验用户导航代次。 */
     private val selectionMenu = object : ActionMode.Callback {
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            markManualNavigation()
+            selectionMode = mode
+            markReadingPositionChanged()
             menu.add(Menu.NONE, SELECTION_LISTEN_ID, 0, "从这里听")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM)
             return true
@@ -922,10 +939,9 @@ class ReaderActivity : FragmentActivity() {
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
             if (item.itemId != SELECTION_LISTEN_ID) return false
-            readingStartJob?.cancel()
             val revision = readingNavigationRevision
             val fragment = navigator ?: return true
-            readingStartJob = lifecycleScope.launch {
+            launchReadingStart {
                 try {
                     val locator = queryNavigatorLocator { fragment.currentSelection()?.locator }
                         ?: visibleTextAnchor(fragment, fragment.currentLocator.value)
@@ -946,7 +962,12 @@ class ReaderActivity : FragmentActivity() {
             return true
         }
 
-        override fun onDestroyActionMode(mode: ActionMode) = Unit
+        override fun onDestroyActionMode(mode: ActionMode) {
+            if (selectionMode === mode) {
+                selectionMode = null
+                synchronizeAudio()
+            }
+        }
     }
 
     private fun epubPreferences() = EpubPreferences(
@@ -981,16 +1002,20 @@ class ReaderActivity : FragmentActivity() {
         }
     }
 
-    /** 保存视觉位置、跟随偏好与未完成起播关联，供配置变化后恢复同一阅读意图。 */
+    /** 保存视觉位置和当前句的手动翻页状态，供配置变化后恢复阅读位置。 */
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_LOCATOR, navigator?.currentLocator?.value?.toJSON()?.toString())
-        outState.putBoolean(STATE_FOLLOW, followAudio)
-        outState.putString(STATE_FOLLOW_REQUEST, handledFollowRequestId)
         outState.putString(STATE_PLAYBACK_INTENT, readingPlaybackIntent.name)
         outState.putString(STATE_READING_START, requestedReadingStart?.toJSON()?.toString())
         pendingAudioSentence?.let { outState.putInt(STATE_PENDING_AUDIO_SENTENCE, it) }
             ?: outState.remove(STATE_PENDING_AUDIO_SENTENCE)
         outState.putString(STATE_PENDING_AUDIO_REQUEST, pendingAudioRequestId)
+        deferredAudioFollow?.let { deferred ->
+            outState.putBundle(STATE_DEFERRED_AUDIO_FOLLOW, Bundle().apply {
+                putString("session", deferred.sessionId)
+                putInt("sentence", deferred.spokenSentence ?: -1)
+            })
+        }
         outState.putBoolean(STATE_READING_CONTROLS, showReadingControls)
         outState.putBoolean(STATE_LISTENING, showListening)
         pendingStoppedProgress?.let { progress ->
@@ -1063,7 +1088,7 @@ class ReaderActivity : FragmentActivity() {
             controlsVisible = showReadingControls,
             hasAudio = activeBook,
             isPlaying = activeBook && audio.isPlaying,
-            isPreparing = activeBook && audio.isPreparing,
+            isPreparing = activeBook && audio.isPreparing && audio.wantsPlayback,
             enabled = enabled,
             paper = paper, ink = ink, accent = accent,
             onBack = ::finish,
@@ -1071,8 +1096,6 @@ class ReaderActivity : FragmentActivity() {
             onAppearance = { showReadingControls = false; showAppearance = true },
             onListen = { showReadingControls = false; showListening = true },
             onToggleControls = { showReadingControls = !showReadingControls },
-            followingAudio = followingAudio,
-            onFollowToggle = ::toggleAudioFollow,
         )
         if (showContents) ContentsDialog()
         if (showAppearance) AppearanceDialog()
@@ -1087,15 +1110,14 @@ class ReaderActivity : FragmentActivity() {
             ) {
                 ListeningPlayerScreen(
                     bookTitle = title, author = book?.author.orEmpty(), coverPath = book?.coverPath,
-                    snapshot = audio, activeBook = activeBook, enabled = enabled, followAudio = followingAudio,
+                    snapshot = audio, activeBook = activeBook, enabled = enabled,
                     paper = paper, ink = ink, accent = accent,
                     onClose = { showListening = false },
                     onToggle = ::toggleListening,
                     onSeek = { PlaybackHub.seekBy(this, it) },
                     onSpeed = { PlaybackHub.setSpeed(this, it) },
                     onFromReading = ::playFromVisibleParagraph,
-                    onFollowToggle = ::toggleAudioFollow,
-                    onLocate = { showListening = false; showReadingControls = false; followCurrentAudio() },
+                    onLocate = { showListening = false; showReadingControls = false; locateCurrentAudio() },
                     onStop = ::stopListening,
                     onVoiceSettings = { PlaybackHub.openVoiceSettings(this) },
                     voiceState = voices.takeIf { it.bookId == bookId && it.language == voiceLanguage }
@@ -1109,7 +1131,7 @@ class ReaderActivity : FragmentActivity() {
         }
     }
 
-    /** 仅对本书有效的相邻章节发送命令，目标由服务确认后再开启跟随，避免先跳回旧句。 */
+    /** 仅对本书有效的相邻章节发送命令，服务更新目标句后由阅读页自动定位。 */
     private fun skipListeningChapter(forward: Boolean) {
         val audio = PlaybackHub.state.value
         if (audio.bookId != bookId ||
@@ -1322,12 +1344,11 @@ class ReaderActivity : FragmentActivity() {
         const val EXTRA_BOOK_ID = "book_id"
         private const val EXTRA_OPEN_PLAYER = "open_player"
         private const val STATE_LOCATOR = "reader_locator"
-        private const val STATE_FOLLOW = "reader_follow_audio"
-        private const val STATE_FOLLOW_REQUEST = "reader_follow_request"
         private const val STATE_PLAYBACK_INTENT = "reader_playback_intent"
         private const val STATE_READING_START = "reader_requested_start"
         private const val STATE_PENDING_AUDIO_SENTENCE = "reader_pending_audio_sentence"
         private const val STATE_PENDING_AUDIO_REQUEST = "reader_pending_audio_request"
+        private const val STATE_DEFERRED_AUDIO_FOLLOW = "reader_deferred_audio_follow"
         private const val STATE_READING_CONTROLS = "reader_controls_visible"
         private const val STATE_LISTENING = "reader_listening_visible"
         private const val STATE_STOPPED_PROGRESS = "reader_stopped_progress"

@@ -125,7 +125,7 @@ class ReaderColdOpenLifecycleTest {
         val jumps = recordNavigation()
         ReflectionHelpers.setField(activity, "audioPageReady", true)
         requireNotNull(highlighter()).onPageLoaded()
-        PlaybackHub.publish(snapshot(2))
+        PlaybackHub.publish(snapshot(2).copy(wantsPlayback = true))
         shadowOf(Looper.getMainLooper()).idle()
 
         attach(book)
@@ -135,7 +135,7 @@ class ReaderColdOpenLifecycleTest {
         assertEquals(locator(2), jumps.lastOrNull())
     }
 
-    @Test fun aLateIndexCannotPullBackAManuallySelectedChapter() {
+    @Test fun aLateIndexCannotPullBackAManuallySelectedChapterWhilePaused() {
         val jumps = recordNavigation()
         val manualPage = locator(book.sentences.first { it.chapterIndex == 2 }.index)
         markManual()
@@ -150,7 +150,6 @@ class ReaderColdOpenLifecycleTest {
 
         assertEquals(manualPage, fragment.currentLocator.value)
         assertTrue(jumps.isEmpty())
-        assertFalse(ReflectionHelpers.callInstanceMethod(activity, "getFollowingAudio"))
     }
 
     @Test fun anEarlyListeningRequestWaitsAndManualNavigationCancelsTheOldTarget() {

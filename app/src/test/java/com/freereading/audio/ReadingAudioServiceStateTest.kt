@@ -10,8 +10,6 @@ import com.freereading.data.SpeechSentence
 import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,7 +67,7 @@ class ReadingAudioServiceStateTest {
     }
 
     @Test fun changingActualPlayerSpeedWhilePreparingPublishesSpeedWithoutChangingTheCursor() {
-        val pending = pendingSnapshot().copy(followRequestId = "accepted-start")
+        val pending = pendingSnapshot().copy(wantsPlayback = true)
         PlaybackHub.publish(pending)
         ReflectionHelpers.setField(service, "transitionToken", 8L)
 
@@ -80,59 +78,52 @@ class ReadingAudioServiceStateTest {
         assertEquals(pending.copy(speed = 1.5f), PlaybackHub.state.value)
     }
 
-    @Test fun systemMediaResumeRestoresFollowOnceWithoutReplacingTheAcceptedSession() {
-        val accepted = pendingSnapshot().copy(playbackSessionId = PlaybackHub.newPlaybackSessionId(),
-            followRequestId = "previous-start")
+    @Test fun systemMediaControlUpdatesPlaybackIntentDuringPreparationWithoutReplacingTheSession() {
+        val accepted = pendingSnapshot().copy(playbackSessionId = PlaybackHub.newPlaybackSessionId())
         PlaybackHub.publish(accepted)
         ReflectionHelpers.setField(service, "transitionToken", 9L)
         val session: MediaSession = ReflectionHelpers.getField(service, "session")
 
         session.player.play()
 
-        val resumed = requireNotNull(PlaybackHub.state.value.followRequestId)
-        assertNotEquals(accepted.followRequestId, resumed)
-        assertEquals(accepted.playbackSessionId, PlaybackHub.state.value.playbackSessionId)
+        val resumed = PlaybackHub.state.value
+        assertEquals(accepted.copy(wantsPlayback = true), resumed)
         session.player.play()
-        assertEquals("Duplicate play while preparing is not another start", resumed,
-            PlaybackHub.state.value.followRequestId)
+        assertEquals(resumed, PlaybackHub.state.value)
         session.player.pause()
-        assertEquals(resumed, PlaybackHub.state.value.followRequestId)
+        assertEquals(accepted, PlaybackHub.state.value)
         session.player.playWhenReady = true
-        assertNotEquals(resumed, PlaybackHub.state.value.followRequestId)
-        assertEquals(accepted.playbackSessionId, PlaybackHub.state.value.playbackSessionId)
+        assertEquals(resumed, PlaybackHub.state.value)
     }
 
-    @Test fun miniPlayerToggleRestoresFollowOnResumeAndLeavesPauseAlone() {
-        val accepted = pendingSnapshot().copy(followRequestId = "previous-start")
+    @Test fun miniPlayerTogglePublishesWhetherPendingSpeechShouldBePlayed() {
+        val accepted = pendingSnapshot()
         PlaybackHub.publish(accepted)
         ReflectionHelpers.setField(service, "transitionToken", 10L)
         val command = PlaybackHub.command(service, ReadingAudioService.ACTION_TOGGLE)
 
         service.onStartCommand(command, 0, 1)
 
-        val resumed = requireNotNull(PlaybackHub.state.value.followRequestId)
-        assertNotEquals(accepted.followRequestId, resumed)
+        assertEquals(accepted.copy(wantsPlayback = true), PlaybackHub.state.value)
         service.onStartCommand(command, 0, 2)
-        assertEquals(resumed, PlaybackHub.state.value.followRequestId)
+        assertEquals(accepted, PlaybackHub.state.value)
     }
 
-    @Test fun aNewBookStartPublishesFollowBeforeTheSavedSentenceIsResolved() {
-        PlaybackHub.publish(pendingSnapshot().copy(followRequestId = "old-start"))
+    @Test fun aNewBookStartPublishesPlaybackIntentBeforeTheSavedSentenceIsResolved() {
+        PlaybackHub.publish(pendingSnapshot())
         val sessionId = PlaybackHub.newPlaybackSessionId()
 
         ReflectionHelpers.callInstanceMethod<Unit>(service, "playBook",
             ClassParameter.from(String::class.java, "another-book"),
             ClassParameter.from(Int::class.javaPrimitiveType, -1),
             ClassParameter.from(Long::class.javaPrimitiveType, 0L),
-            ClassParameter.from(String::class.java, sessionId),
-            ClassParameter.from(String::class.java, PlaybackHub.newFollowRequestId()))
+            ClassParameter.from(String::class.java, sessionId))
 
         val starting = PlaybackHub.state.value
         assertEquals("another-book", starting.bookId)
         assertEquals(sessionId, starting.playbackSessionId)
         assertEquals(0, starting.sentenceCount)
-        assertNotNull(starting.followRequestId)
-        assertNotEquals("old-start", starting.followRequestId)
+        assertEquals(true, starting.wantsPlayback)
     }
 
     private fun pendingSnapshot() = PlaybackSnapshot(bookId = "book-a", bookTitle = "测试书籍",

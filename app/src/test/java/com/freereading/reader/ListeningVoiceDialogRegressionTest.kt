@@ -100,14 +100,14 @@ class ListeningVoiceDialogRegressionTest {
                             decorFitsSystemWindows = false, dismissOnClickOutside = false)) {
                         ListeningPlayerScreen(bookTitle = "山间来信", author = "示例作者", coverPath = null,
                             snapshot = PlaybackSnapshot(bookId = "book-a"), activeBook = true,
-                            enabled = true, followAudio = true, paper = Paper, ink = Ink, accent = Forest,
+                            enabled = true, paper = Paper, ink = Ink, accent = Forest,
                             voiceState = state.value,
                             onLoadVoices = { events += "load"; state.value = state.value.copy(loading = true) },
                             onSelectVoice = { events += "select:$it" },
                             onClose = { visible.value = false; events += "close-player" },
                             onToggle = { events += "toggle" }, onSeek = { events += "seek" },
                             onSpeed = { events += "speed" }, onFromReading = { events += "from-reading" },
-                            onFollowToggle = { events += "follow" }, onLocate = { events += "locate" },
+                            onLocate = { events += "locate" },
                             onStop = { events += "stop" }, onVoiceSettings = { events += "settings" })
                     }
                 }

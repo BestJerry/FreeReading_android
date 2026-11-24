@@ -54,13 +54,11 @@ class ReaderChapterControlsTest {
     @Test fun chapterSelectionCancelsAnOlderLookupAndDiscardsItsResumeCursor() {
         val oldCursor = ReadingProgress(bookId, sentenceIndex = 5, audioOffsetMs = 4_000)
         // The old audio cursor must not steal the page before the new chapter is published.
-        ReflectionHelpers.callInstanceMethod<Unit>(activity, "toggleAudioFollow")
         ReflectionHelpers.callInstanceMethod<Unit>(activity, "markManualNavigation")
         val pending = Job()
         ReflectionHelpers.setField(activity, "readingStartJob", pending)
         ReflectionHelpers.setField(activity, "resumableProgress", oldCursor)
         ReflectionHelpers.setField(activity, "pendingStoppedProgress", oldCursor)
-        assertFalse(ReflectionHelpers.callInstanceMethod(activity, "getFollowAudio"))
 
         skip(forward = true)
 
@@ -69,18 +67,12 @@ class ReaderChapterControlsTest {
         assertNull(ReflectionHelpers.getField<ReadingProgress?>(activity, "pendingStoppedProgress"))
         assertEquals(ReadingPlaybackIntent.FROM_READING_LOCATION,
             ReflectionHelpers.callInstanceMethod<ReadingPlaybackIntent>(activity, "getReadingPlaybackIntent"))
-        assertFalse(ReflectionHelpers.callInstanceMethod(activity, "getFollowAudio"))
         val command = shadowOf(app).nextStartedService
         assertEquals(ReadingAudioService.ACTION_NEXT_CHAPTER, command?.action)
         assertEquals(bookId, command?.getStringExtra(ReadingAudioService.EXTRA_BOOK_ID))
         assertTrue(PlaybackHub.isAuthorizedCommand(requireNotNull(command)))
         assertNull(shadowOf(app).nextStartedService)
         assertFalse(activity.isFinishing)
-
-        PlaybackHub.publish(PlaybackHub.state.value.copy(sentenceIndex = 7, sentenceCount = 10,
-            followRequestId = command.getStringExtra(ReadingAudioService.EXTRA_FOLLOW_REQUEST_ID)))
-        ReflectionHelpers.callInstanceMethod<Unit>(activity, "synchronizeAudio")
-        assertTrue(ReflectionHelpers.callInstanceMethod(activity, "getFollowingAudio"))
     }
 
     @Test fun previousChapterWorksWhileTheDocumentIsLoadingAndPreservesStartAcknowledgement() {
@@ -95,7 +87,6 @@ class ReaderChapterControlsTest {
         assertEquals(bookId, command?.getStringExtra(ReadingAudioService.EXTRA_BOOK_ID))
         assertEquals(5, ReflectionHelpers.getField<Int?>(activity, "pendingAudioSentence"))
         assertEquals(requestId, ReflectionHelpers.getField<String?>(activity, "pendingAudioRequestId"))
-        assertTrue(ReflectionHelpers.callInstanceMethod(activity, "getFollowAudio"))
     }
 
     @Test fun missingBoundariesAndAnotherBooksSessionDoNotSendTransportCommands() {

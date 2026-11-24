@@ -21,6 +21,18 @@ class PlaybackStartPolicyTest {
         )
     }
 
+    @Test fun pausedWhilePreparingUsesTheNewReadingLocationOnlyIfTheReaderNavigated() {
+        val pausedWhilePreparing = pausedAudio.copy(isPreparing = true)
+        assertEquals(
+            PrimaryPlaybackAction.START_FROM_READING_LOCATION,
+            primaryPlaybackAction(pausedWhilePreparing, currentBook, ReadingPlaybackIntent.FROM_READING_LOCATION),
+        )
+        assertEquals(
+            PrimaryPlaybackAction.RESUME_AUDIO,
+            primaryPlaybackAction(pausedWhilePreparing, currentBook, ReadingPlaybackIntent.CONTINUE_AUDIO),
+        )
+    }
+
     @Test fun pausedSameBookWithoutNavigationResumesItsExistingSentenceAndOffset() {
         assertEquals(
             PrimaryPlaybackAction.RESUME_AUDIO,
@@ -31,7 +43,7 @@ class PlaybackStartPolicyTest {
     @Test fun playingSameBookStillPausesAfterUserBrowsesElsewhere() {
         assertEquals(
             PrimaryPlaybackAction.PAUSE_OR_TOGGLE,
-            primaryPlaybackAction(pausedAudio.copy(isPlaying = true), currentBook,
+            primaryPlaybackAction(pausedAudio.copy(isPlaying = true, wantsPlayback = true), currentBook,
                 ReadingPlaybackIntent.FROM_READING_LOCATION),
         )
     }
@@ -39,13 +51,13 @@ class PlaybackStartPolicyTest {
     @Test fun preparingSameBookKeepsTheCurrentButtonActionRatherThanStartingAnotherRequest() {
         assertEquals(
             PrimaryPlaybackAction.PAUSE_OR_TOGGLE,
-            primaryPlaybackAction(pausedAudio.copy(isPreparing = true), currentBook,
+            primaryPlaybackAction(pausedAudio.copy(isPreparing = true, wantsPlayback = true), currentBook,
                 ReadingPlaybackIntent.FROM_READING_LOCATION),
         )
     }
 
     @Test fun playingAnotherBookDoesNotTurnThisBooksPrimaryButtonIntoPause() {
-        val anotherBookPlaying = pausedAudio.copy(bookId = "another-book", isPlaying = true)
+        val anotherBookPlaying = pausedAudio.copy(bookId = "another-book", isPlaying = true, wantsPlayback = true)
         assertEquals(
             PrimaryPlaybackAction.START_FROM_READING_LOCATION,
             primaryPlaybackAction(anotherBookPlaying, currentBook, ReadingPlaybackIntent.FROM_READING_LOCATION),
@@ -96,7 +108,7 @@ class PlaybackStartPolicyTest {
     }
 
     @Test fun aRetryStillPausesTheSameBookWhileItsExistingAudioIsPlayingOrPreparing() {
-        for (snapshot in listOf(pausedAudio.copy(isPlaying = true), pausedAudio.copy(isPreparing = true))) {
+        for (snapshot in listOf(pausedAudio.copy(isPlaying = true, wantsPlayback = true), pausedAudio.copy(isPreparing = true, wantsPlayback = true))) {
             assertEquals(
                 PrimaryPlaybackAction.PAUSE_OR_TOGGLE,
                 primaryPlaybackAction(snapshot, currentBook, ReadingPlaybackIntent.RETRY_AUDIO_START),
@@ -106,7 +118,7 @@ class PlaybackStartPolicyTest {
 
     @Test fun aRetryWithoutThisBooksActiveAudioUsesTheSavedRequest() {
         for (snapshot in listOf(PlaybackSnapshot(), pausedAudio.copy(bookId = "another-book"),
-            pausedAudio.copy(bookId = "another-book", isPlaying = true))) {
+            pausedAudio.copy(bookId = "another-book", isPlaying = true, wantsPlayback = true))) {
             assertEquals(
                 PrimaryPlaybackAction.RESUME_SAVED_OR_READING,
                 primaryPlaybackAction(snapshot, currentBook, ReadingPlaybackIntent.RETRY_AUDIO_START),

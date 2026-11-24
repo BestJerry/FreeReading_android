@@ -43,7 +43,7 @@ class ReaderActivityAsyncTest {
         val wasAlive = PlaybackHub.serviceAlive
         val desired = ReadingProgress("reader-async-probe", null, 7, 6_000, 123)
         val old = PlaybackSnapshot(bookId = "reader-async-probe", sentenceIndex = 2,
-            isPlaying = true, playbackSessionId = PlaybackHub.newPlaybackSessionId())
+            isPlaying = true, wantsPlayback = true, playbackSessionId = PlaybackHub.newPlaybackSessionId())
         try {
             PlaybackHub.publish(old)
             rejectForegroundStarts(controller.get()) {
@@ -54,8 +54,6 @@ class ReaderActivityAsyncTest {
             assertEquals(desired, ReflectionHelpers.getField<ReadingProgress>(controller.get(), "resumableProgress"))
             assertEquals(ReadingPlaybackIntent.RETRY_AUDIO_START,
                 ReflectionHelpers.callInstanceMethod<ReadingPlaybackIntent>(controller.get(), "getReadingPlaybackIntent"))
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowAudio"))
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
 
             PlaybackHub.serviceAlive = true
             PlaybackHub.publish(old)
@@ -64,7 +62,7 @@ class ReaderActivityAsyncTest {
             assertEquals(ReadingAudioService.ACTION_TOGGLE, shadowOf(app).nextStartedService?.action)
             assertEquals(desired, ReflectionHelpers.getField<ReadingProgress>(controller.get(), "pendingStoppedProgress"))
 
-            PlaybackHub.publish(old.copy(isPlaying = false))
+            PlaybackHub.publish(old.copy(isPlaying = false, wantsPlayback = false))
             ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "toggleListening")
             val retry = shadowOf(app).nextStartedService
             assertEquals(ReadingAudioService.ACTION_PLAY_BOOK, retry?.action)
@@ -97,7 +95,6 @@ class ReaderActivityAsyncTest {
             assertEquals(desired, ReflectionHelpers.getField<ReadingProgress>(restarted.get(), "resumableProgress"))
             assertEquals(ReadingPlaybackIntent.RETRY_AUDIO_START,
                 ReflectionHelpers.callInstanceMethod<ReadingPlaybackIntent>(restarted.get(), "getReadingPlaybackIntent"))
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(restarted.get(), "getFollowingAudio"))
         } finally { restarted.destroy() }
     }
 
@@ -153,39 +150,19 @@ class ReaderActivityAsyncTest {
                     sentenceIndex = 8, isPlaying = true, playbackSessionId = requestId)))
             assertNull(ReflectionHelpers.getField<Int?>(recreated.get(), "pendingAudioSentence"))
             assertNull(ReflectionHelpers.getField<String?>(recreated.get(), "pendingAudioRequestId"))
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowingAudio"))
         } finally { recreated.destroy() }
     }
 
-    @Test fun manualBrowsingTemporarilyDetachesWithoutDisablingTheAutomaticPagingPreference() {
+    @Test fun resumingSavedAudioKeepsItsChosenPosition() {
         val app = RuntimeEnvironment.getApplication() as ReadingApplication
         val controller = Robolectric.buildActivity(ReaderActivity::class.java,
             ReaderActivity.intent(app, "reader-async-probe")).create()
         try {
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
-
-            ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "markManualNavigation")
-
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowAudio"))
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
-            ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "toggleAudioFollow")
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
-        } finally { controller.destroy() }
-    }
-
-    @Test fun resumingSavedAudioReenablesAutomaticPagingAndKeepsItsChosenPosition() {
-        val app = RuntimeEnvironment.getApplication() as ReadingApplication
-        val controller = Robolectric.buildActivity(ReaderActivity::class.java,
-            ReaderActivity.intent(app, "reader-async-probe")).create()
-        try {
-            ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "toggleAudioFollow")
             val saved = ReadingProgress("reader-async-probe", null, 7, 6_000)
             ReflectionHelpers.setField(controller.get(), "resumableProgress", saved)
 
             ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "resumeOrPlayFromPage")
 
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowAudio"))
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
             val started = shadowOf(app).nextStartedService
             assertEquals(ReadingAudioService.ACTION_PLAY_BOOK, started?.action)
             assertEquals(7, started?.getIntExtra(ReadingAudioService.EXTRA_INDEX, -1))
@@ -193,33 +170,7 @@ class ReaderActivityAsyncTest {
         } finally { controller.destroy() }
     }
 
-    @Test fun recreationDoesNotReconsumeAStartAfterTheUserClosesFollowButANewResumeRestoresIt() {
-        val app = RuntimeEnvironment.getApplication() as ReadingApplication
-        val intent = ReaderActivity.intent(app, "reader-async-probe")
-        val controller = Robolectric.buildActivity(ReaderActivity::class.java, intent).create()
-        val saved = Bundle()
-        PlaybackHub.publish(PlaybackSnapshot(bookId = "reader-async-probe", followRequestId = PlaybackHub.newFollowRequestId()))
-        try {
-            ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "synchronizeAudio")
-            ReflectionHelpers.callInstanceMethod<Unit>(controller.get(), "toggleAudioFollow")
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(controller.get(), "getFollowingAudio"))
-            controller.saveInstanceState(saved)
-        } finally { controller.destroy() }
-        val recreated = Robolectric.buildActivity(ReaderActivity::class.java, intent).create(saved)
-        try {
-            ReflectionHelpers.callInstanceMethod<Unit>(recreated.get(), "synchronizeAudio")
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowingAudio"))
-            val nextFollowRequest = PlaybackHub.newFollowRequestId()
-            PlaybackHub.publish(PlaybackSnapshot(bookId = "another-book", followRequestId = nextFollowRequest))
-            ReflectionHelpers.callInstanceMethod<Unit>(recreated.get(), "synchronizeAudio")
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowingAudio"))
-            PlaybackHub.publish(PlaybackSnapshot(bookId = "reader-async-probe", followRequestId = nextFollowRequest))
-            ReflectionHelpers.callInstanceMethod<Unit>(recreated.get(), "synchronizeAudio")
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowingAudio"))
-        } finally { recreated.destroy() }
-    }
-
-    @Test fun recreationKeepsAChosenReadingLocationDetachedWhileRememberingAutomaticPagingIsEnabled() {
+    @Test fun recreationKeepsTheChosenReadingLocationForTheNextStart() {
         val app = RuntimeEnvironment.getApplication() as ReadingApplication
         val intent = ReaderActivity.intent(app, "reader-async-probe")
         val controller = Robolectric.buildActivity(ReaderActivity::class.java, intent).create()
@@ -230,8 +181,6 @@ class ReaderActivityAsyncTest {
         } finally { controller.destroy() }
         val recreated = Robolectric.buildActivity(ReaderActivity::class.java, intent).create(saved)
         try {
-            assertTrue(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowAudio"))
-            assertFalse(ReflectionHelpers.callInstanceMethod<Boolean>(recreated.get(), "getFollowingAudio"))
             assertEquals(ReadingPlaybackIntent.FROM_READING_LOCATION,
                 ReflectionHelpers.callInstanceMethod<ReadingPlaybackIntent>(recreated.get(), "getReadingPlaybackIntent"))
         } finally { recreated.destroy() }

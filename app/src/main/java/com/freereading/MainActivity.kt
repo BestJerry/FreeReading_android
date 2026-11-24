@@ -349,6 +349,8 @@ private fun BookCover(book: BookRecord, modifier: Modifier = Modifier) {
 @Composable
 private fun NowPlaying(state: PlaybackSnapshot, openBook: (String) -> Unit) {
     val context = LocalContext.current
+    val preparing = state.wantsPlayback && state.isPreparing
+    val actionLabel = stringResource(if (state.wantsPlayback) R.string.pause_playback else R.string.resume_playback)
     Surface(color = Forest, modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().navigationBarsPadding().clickable { state.bookId?.let(openBook) }.padding(horizontal = 24.dp, vertical = 10.dp),
@@ -358,13 +360,13 @@ private fun NowPlaying(state: PlaybackSnapshot, openBook: (String) -> Unit) {
             Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
                 Text(state.bookTitle, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (state.isPreparing) stringResource(R.string.preparing_audio) else state.chapterTitle.ifBlank { stringResource(R.string.currently_listening) },
+                    if (preparing) stringResource(R.string.preparing_audio) else state.chapterTitle.ifBlank { stringResource(R.string.currently_listening) },
                     color = Color.White.copy(alpha = .65f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
             IconButton(onClick = { PlaybackHub.toggle(context) }, modifier = Modifier.clip(CircleShape).background(Color.White.copy(alpha = .12f))) {
-                if (state.isPreparing) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                else Icon(if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, stringResource(if (state.isPlaying) R.string.pause_playback else R.string.resume_playback), tint = Color.White)
+                if (preparing) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                else Icon(if (state.wantsPlayback) Icons.Default.Pause else Icons.Default.PlayArrow, actionLabel, tint = Color.White)
             }
         }
     }

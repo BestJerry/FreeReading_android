@@ -45,8 +45,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -95,7 +93,6 @@ internal fun ListeningPlayerScreen(
     snapshot: PlaybackSnapshot,
     activeBook: Boolean,
     enabled: Boolean,
-    followAudio: Boolean,
     paper: Color,
     ink: Color,
     accent: Color,
@@ -104,7 +101,6 @@ internal fun ListeningPlayerScreen(
     onSeek: (Long) -> Unit,
     onSpeed: (Float) -> Unit,
     onFromReading: () -> Unit,
-    onFollowToggle: () -> Unit,
     onLocate: () -> Unit,
     onStop: () -> Unit,
     onVoiceSettings: () -> Unit,
@@ -124,7 +120,8 @@ internal fun ListeningPlayerScreen(
     val fraction = if (activeBook) snapshot.chapterProgressFraction else 0f
     val progressLabel = if (activeBook && snapshot.chapterSentenceCount > 0) "${(fraction * 100).toInt()}%" else "—"
     val playing = activeBook && snapshot.isPlaying
-    val preparing = activeBook && snapshot.isPreparing
+    val wantsPlayback = activeBook && snapshot.wantsPlayback
+    val preparing = wantsPlayback && snapshot.isPreparing
     var speedMenu by remember { mutableStateOf(false) }
     var voicePicker by remember { mutableStateOf(false) }
     val voiceSummary = voiceState.catalog?.let { catalog ->
@@ -195,12 +192,12 @@ internal fun ListeningPlayerScreen(
                         horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                         ListeningSeekButton(Icons.Default.FastRewind, "快退15秒", controlsEnabled, ink) { onSeek(-15_000L) }
                         FilledIconButton(onClick = onToggle, enabled = enabled || activeBook, modifier = Modifier.size(80.dp)
-                            .semantics { contentDescription = if (playing) "暂停听书" else "开始或继续听书" },
+                            .semantics { contentDescription = if (wantsPlayback) "暂停听书" else "开始或继续听书" },
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = accent, contentColor = paper,
                                 disabledContainerColor = ink.copy(alpha = 0.08f), disabledContentColor = ink.copy(alpha = 0.3f))) {
                             if (preparing) CircularProgressIndicator(Modifier.size(30.dp), color = paper, strokeWidth = 2.dp)
-                            else Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null, Modifier.size(38.dp))
+                            else Icon(if (wantsPlayback) Icons.Default.Pause else Icons.Default.PlayArrow, null, Modifier.size(38.dp))
                         }
                         ListeningSeekButton(Icons.Default.FastForward, "快进15秒", controlsEnabled, ink) { onSeek(15_000L) }
                     }
@@ -249,20 +246,6 @@ internal fun ListeningPlayerScreen(
                             onSelect = onSelectVoice, onVoiceSettings = onVoiceSettings)
                     }
                     Spacer(Modifier.height(18.dp))
-                    Surface(color = ink.copy(alpha = 0.035f), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("跟随原文", color = ink, fontSize = 14.sp)
-                                Text("朗读时自动定位正文", color = muted, fontSize = 11.sp)
-                            }
-                            Switch(checked = followAudio, onCheckedChange = { onFollowToggle() }, enabled = readingActionsEnabled,
-                                modifier = Modifier.semantics { contentDescription = "跟随原文" },
-                                colors = SwitchDefaults.colors(checkedThumbColor = paper, checkedTrackColor = accent,
-                                    checkedBorderColor = accent, uncheckedThumbColor = muted,
-                                    uncheckedTrackColor = Color.Transparent, uncheckedBorderColor = ink.copy(alpha = 0.3f)))
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(onClick = onLocate, enabled = readingActionsEnabled,
                             border = BorderStroke(1.dp, ink.copy(alpha = 0.14f)),
