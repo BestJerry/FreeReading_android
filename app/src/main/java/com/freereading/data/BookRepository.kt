@@ -11,6 +11,7 @@ import com.freereading.epub.BookImportException
 import com.freereading.epub.ReadiumEngine
 import com.freereading.epub.ReadingProgressRebaser
 import com.freereading.epub.SentenceIndexer
+import com.freereading.pdf.PdfBookIndexer
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -34,7 +35,7 @@ import org.readium.r2.shared.publication.Publication
 import org.readium.r2.shared.util.use
 
 /**
- * 应用级本地书库，管理私有目录中的 EPUB、听书索引、封面和进度。
+ * 应用级本地书库，管理私有目录中的书籍原文件、听书索引、封面和进度。
  * mutations 串行化导入／删除／索引迁移；progressLock 单独保护进度，避免播放保存被整书解析阻塞。
  */
 class BookRepository(context: Context) {
@@ -62,7 +63,7 @@ class BookRepository(context: Context) {
     }
 
     /**
-     * 在暂存目录内完成复制去重、EPUB 校验、分句和索引保存，最后重命名目录提交书籍。
+     * 在暂存目录内完成复制去重、格式校验、分句和索引保存，最后重命名目录提交书籍。
      * 原文件哈希相同时复用已有记录；失败或取消会清理本次尚未提交的文件。
      */
     suspend fun importBook(uri: Uri, onProgress: ((BookImportProgress) -> Unit)? = null): BookRecord = withContext(Dispatchers.IO) {
@@ -73,43 +74,26 @@ class BookRepository(context: Context) {
             val staging = File(root, ".import-${UUID.randomUUID()}")
             if (!staging.mkdir()) throw BookImportException("无法创建书籍目录，请检查设备剩余空间")
             try {
-                val stagedBook = File(staging, BOOK_FILE)
-                val id = copyAndHash(uri, stagedBook, progress)
+                val upload = File(staging, "source")
+                val id = copyAndHash(uri, upload, progress)
                 val destination = directory(id)
                 if (destination.exists()) {
                     val existing = readRecord(destination)
                     val recoverableIndex = File(destination, INDEX_FILE).isFile ||
                         (readTextIndexVersion(destination) < TEXT_INDEX_VERSION && File(destination, LEGACY_INDEX_FILE).isFile)
-                    if (!File(destination, BOOK_FILE).isFile || !recoverableIndex) {
+                    if (!sourceFile(destination, existing.format).isFile || !recoverableIndex) {
                         throw BookImportException("已导入的书籍文件不完整，请移除后重新导入")
                     }
                     refreshLocked()
                     progress?.report(ImportStage.COMPLETED)
                     return@withLock existing
                 }
-                val publication = readium.open(stagedBook, progress?.let { reporter ->
-                    { completed: Long, total: Long? -> reporter.report(ImportStage.VALIDATING, completed, total) }
-                })
-                val speechBook = try {
-                    val sentences = SentenceIndexer().index(publication, progress?.let { reporter ->
-                        { completed: Long, total: Long -> reporter.report(ImportStage.INDEXING, completed, total) }
-                    })
-                    progress?.report(ImportStage.SAVING)
-                    val hasCover = writeCover(publication, File(staging, COVER_FILE))
-                    val metadata = publication.metadata
-                    val book = BookRecord(
-                        id = id,
-                        title = metadata.title?.trim()?.takeIf { it.isNotEmpty() }?.take(2048)
-                            ?: displayName(uri).substringBeforeLast('.').ifBlank { "EPUB" }.take(2048),
-                        author = metadata.authors.joinToString("、") { it.name }.take(2048),
-                        language = metadata.languages.firstOrNull().orEmpty().take(64),
-                        addedAt = System.currentTimeMillis(),
-                        sentenceCount = sentences.size,
-                        coverPath = if (hasCover) File(destination, COVER_FILE).absolutePath else null,
-                    )
-                    SpeechBook(book, sentences)
-                } finally {
-                    publication.close()
+                val format = detectFormat(upload, uri)
+                val stagedBook = sourceFile(staging, format)
+                if (!upload.renameTo(stagedBook)) throw IOException("Could not assign the imported file name")
+                val speechBook = when (format) {
+                    BookFormat.EPUB -> indexEpub(stagedBook, id, uri, destination, progress)
+                    BookFormat.PDF -> indexPdf(stagedBook, id, uri, progress)
                 }
                 writeIndex(File(staging, INDEX_FILE), speechBook, progress?.let { reporter ->
                     { completed: Long, total: Long? -> reporter.report(ImportStage.SAVING, completed, total) }
@@ -134,6 +118,71 @@ class BookRepository(context: Context) {
         }
     }
 
+    private fun detectFormat(file: File, uri: Uri): BookFormat {
+        val header = file.inputStream().buffered().use { input ->
+            ByteArray(5).let { bytes ->
+                if (input.read(bytes) == bytes.size) bytes.toString(Charsets.US_ASCII) else ""
+            }
+        }
+        if (header == "%PDF-") return BookFormat.PDF
+        // A valid ZIP may be mislabeled by its filename or a file provider.
+        if (!header.startsWith("PK") && (displayName(uri).endsWith(".pdf", ignoreCase = true) ||
+                runCatching { appContext.contentResolver.getType(uri) }.getOrNull() == "application/pdf")) {
+            throw BookImportException("无法打开 PDF，请检查文件是否完整")
+        }
+        return BookFormat.EPUB
+    }
+
+    private suspend fun indexEpub(
+        file: File,
+        id: String,
+        uri: Uri,
+        destination: File,
+        progress: ImportProgressReporter?,
+    ): SpeechBook = readium.open(file, progress?.let { reporter ->
+        { completed: Long, total: Long? -> reporter.report(ImportStage.VALIDATING, completed, total) }
+    }).use { publication ->
+        val sentences = SentenceIndexer().index(publication, progress?.let { reporter ->
+            { completed: Long, total: Long -> reporter.report(ImportStage.INDEXING, completed, total) }
+        })
+        progress?.report(ImportStage.SAVING)
+        val hasCover = writeCover(publication, File(file.parentFile, COVER_FILE))
+        val metadata = publication.metadata
+        val book = BookRecord(
+            id = id,
+            title = bookTitle(metadata.title, uri, BookFormat.EPUB),
+            author = metadata.authors.joinToString("、") { it.name }.take(2048),
+            language = metadata.languages.firstOrNull().orEmpty().take(64),
+            addedAt = System.currentTimeMillis(),
+            sentenceCount = sentences.size,
+            coverPath = if (hasCover) File(destination, COVER_FILE).absolutePath else null,
+        )
+        SpeechBook(book, sentences)
+    }
+
+    private suspend fun indexPdf(file: File, id: String, uri: Uri, progress: ImportProgressReporter?): SpeechBook {
+        progress?.report(ImportStage.VALIDATING)
+        val index = PdfBookIndexer(appContext).index(file,
+            onPageCount = { progress?.report(ImportStage.VALIDATING, 1, 1) },
+            onProgress = { done, total -> progress?.report(ImportStage.INDEXING, done, total) })
+        progress?.report(ImportStage.SAVING)
+        val book = BookRecord(
+            id = id,
+            title = bookTitle(index.title, uri, BookFormat.PDF),
+            author = index.author.orEmpty().trim().take(2048),
+            language = index.language.orEmpty().trim().take(64),
+            addedAt = System.currentTimeMillis(),
+            sentenceCount = index.sentences.size,
+            format = BookFormat.PDF,
+            pdfPageCount = index.pageCount,
+        )
+        return SpeechBook(book, index.sentences)
+    }
+
+    private fun bookTitle(title: String?, uri: Uri, format: BookFormat): String =
+        (title?.trim()?.takeIf { it.isNotEmpty() }
+            ?: displayName(uri).substringBeforeLast('.').ifBlank { format.name }).take(2048)
+
     /**
      * 为阅读首屏准备元数据和页面位置，新版听书索引保持按需解码。
      * 旧版定位必须先完成迁移；快速重开同书时先等待上一阅读页的最终保存。
@@ -144,7 +193,7 @@ class BookRepository(context: Context) {
             val dir = directory(bookId)
             try {
                 val record = readRecord(dir)
-                if (!File(dir, BOOK_FILE).isFile) throw BookImportException("书籍原文件已不存在，请重新导入")
+                if (!sourceFile(dir, record.format).isFile) throw BookImportException("书籍原文件已不存在，请重新导入")
                 val textVersion = readTextIndexVersion(dir)
                 if (textVersion > TEXT_INDEX_VERSION) throw BookImportException("书籍索引来自更新版本，请更新应用后打开")
                 if (textVersion < TEXT_INDEX_VERSION) {
@@ -165,7 +214,7 @@ class BookRepository(context: Context) {
                     }
                 }
                 deleteLegacyIndex(dir)
-                val stamp = cacheStamp(dir)
+                val stamp = cacheStamp(dir, record.format)
                 val cached = speechBookCache[bookId]
                 val full = if (stamp != null && cached?.record == record && cached.stamp == stamp) {
                     cached.reference.get()
@@ -227,7 +276,7 @@ class BookRepository(context: Context) {
             val dir = directory(bookId)
             try {
                 val record = readRecord(dir)
-                if (!File(dir, BOOK_FILE).isFile) throw BookImportException("书籍原文件已不存在，请重新导入")
+                if (!sourceFile(dir, record.format).isFile) throw BookImportException("书籍原文件已不存在，请重新导入")
                 val textVersion = readTextIndexVersion(dir)
                 if (textVersion > TEXT_INDEX_VERSION) throw BookImportException("书籍索引来自更新版本，请更新应用后打开")
                 if (textVersion < TEXT_INDEX_VERSION) {
@@ -240,7 +289,7 @@ class BookRepository(context: Context) {
                     }
                 }
                 deleteLegacyIndex(dir)
-                val stamp = cacheStamp(dir)
+                val stamp = cacheStamp(dir, record.format)
                 val cached = speechBookCache[bookId]
                 if (stamp != null && cached?.record == record && cached.stamp == stamp) {
                     cached.reference.get()?.let { return@withLock it }
@@ -259,7 +308,39 @@ class BookRepository(context: Context) {
         }
     }
 
-    fun bookFile(bookId: String): File = File(directory(bookId), BOOK_FILE)
+    fun bookFile(bookId: String): File {
+        val directory = directory(bookId)
+        return sourceFile(directory, if (File(directory, PDF_FILE).isFile) BookFormat.PDF else BookFormat.EPUB)
+    }
+
+    private fun sourceFile(directory: File, format: BookFormat): File =
+        File(directory, if (format == BookFormat.PDF) PDF_FILE else BOOK_FILE)
+
+    /** PDF 的视觉页码与听书游标分开保存，手动翻页不会改动音频断点。 */
+    fun pdfReadingPage(bookId: String): Int? = synchronized(progressLock) {
+        val dir = directory(bookId)
+        val record = runCatching { readRecord(dir) }.getOrNull() ?: return@synchronized null
+        if (record.format != BookFormat.PDF) return@synchronized null
+        runCatching { readSmallJson(File(dir, PDF_PAGE_FILE)).getInt("page") }.getOrNull()
+            ?.takeIf { it in 0 until record.pdfPageCount }
+    }
+
+    fun savePdfReadingPage(bookId: String, pageIndex: Int, expectedAddedAt: Long,
+                           updatedAt: Long = System.currentTimeMillis()): Unit = synchronized(progressLock) {
+        val dir = directory(bookId)
+        val record = runCatching { readRecord(dir) }.getOrNull() ?: return@synchronized
+        if (record.addedAt != expectedAddedAt || record.format != BookFormat.PDF ||
+            pageIndex !in 0 until record.pdfPageCount) return@synchronized
+        val file = File(dir, PDF_PAGE_FILE)
+        val previous = runCatching { readSmallJson(file) }.getOrNull()
+        if (updatedAt < (previous?.optLong("updatedAt", 0L) ?: 0L)) return@synchronized
+        try {
+            val page = JSONObject().put("page", pageIndex).put("updatedAt", updatedAt)
+            atomicWrite(file) { it.write(page.toString().toByteArray(Charsets.UTF_8)) }
+        } catch (error: IOException) {
+            Log.w(TAG, "Could not persist PDF page", error)
+        }
+    }
 
     /** 在线程安全的进度缓存中读取最新位置，缺少合法进度时返回初始游标。 */
     fun progress(bookId: String): ReadingProgress = synchronized(progressLock) {
@@ -405,7 +486,7 @@ class BookRepository(context: Context) {
         var total = if (progress != null) sourceSize(uri) else null
         progress?.report(ImportStage.COPYING, 0, total)
         val input = appContext.contentResolver.openInputStream(uri)
-            ?: throw BookImportException("无法打开所选文件，请重新选择 EPUB")
+            ?: throw BookImportException("无法打开所选文件，请重新选择书籍")
         var size = 0L
         input.use { source ->
             FileOutputStream(target).use { output ->
@@ -450,12 +531,15 @@ class BookRepository(context: Context) {
         return queried
     }
 
-    private fun displayName(uri: Uri): String = try {
-        appContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) cursor.getString(0) else null
-        }.orEmpty().ifBlank { "EPUB" }
-    } catch (_: Exception) {
-        "EPUB"
+    private fun displayName(uri: Uri): String {
+        if (uri.scheme == "file") return uri.path?.let(::File)?.name.orEmpty()
+        return try {
+            appContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun ensureRoot() {
@@ -491,10 +575,21 @@ class BookRepository(context: Context) {
             throw BookImportException("书籍记录无效，请移除后重新导入")
         }
         val count = json.getInt("sentenceCount")
+        val format = when (json.optString("format", "EPUB")) {
+            "EPUB" -> BookFormat.EPUB
+            "PDF" -> BookFormat.PDF
+            else -> throw BookImportException("书籍格式未知，请更新应用后打开")
+        }
+        val textVersion = json.optInt(TEXT_INDEX_VERSION_FIELD, 1)
+        val pdfPageCount = if (format == BookFormat.PDF) json.optInt("pdfPageCount") else 0
+        if (format == BookFormat.PDF && (pdfPageCount !in 1..PdfBookIndexer.MAX_PAGE_COUNT ||
+            textVersion < TEXT_INDEX_VERSION)) throw BookImportException("PDF 页面索引无效，请重新导入")
         // 旧版或中断迁移的句数可能过时；这类书会先从 EPUB 重建索引，
         // 不使用旧句数直接分配索引内存或进行新版句数校验。
-        if (json.optInt(TEXT_INDEX_VERSION_FIELD, 1) >= TEXT_INDEX_VERSION &&
-            count !in 1..SpeechIndexLimits.MAX_SENTENCES) throw BookImportException("书籍句子索引无效，请重新导入")
+        val minSentenceCount = if (format == BookFormat.PDF) 0 else 1
+        if (textVersion >= TEXT_INDEX_VERSION && count !in minSentenceCount..SpeechIndexLimits.MAX_SENTENCES) {
+            throw BookImportException("书籍句子索引无效，请重新导入")
+        }
         return BookRecord(
             id = id,
             title = json.getString("title"),
@@ -503,6 +598,8 @@ class BookRepository(context: Context) {
             addedAt = json.getLong("addedAt"),
             sentenceCount = count,
             coverPath = File(directory, COVER_FILE).takeIf { it.isFile }?.absolutePath,
+            format = format,
+            pdfPageCount = pdfPageCount,
         )
     }
 
@@ -555,6 +652,10 @@ class BookRepository(context: Context) {
             put("language", book.language)
             put("addedAt", book.addedAt)
             put("sentenceCount", book.sentenceCount)
+            if (book.format == BookFormat.PDF) {
+                put("format", book.format.name)
+                put("pdfPageCount", book.pdfPageCount)
+            }
         }
         atomicWrite(file) { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
     }
@@ -577,14 +678,14 @@ class BookRepository(context: Context) {
     )
 
     /** 三个必要文件均存在时才生成缓存指纹，缺文件立即使缓存失效。 */
-    private fun cacheStamp(dir: File): List<FileStamp>? {
-        val files = listOf(BOOK_FILE, METADATA_FILE, INDEX_FILE).map { File(dir, it) }
+    private fun cacheStamp(dir: File, format: BookFormat): List<FileStamp>? {
+        val files = listOf(sourceFile(dir, format), File(dir, METADATA_FILE), File(dir, INDEX_FILE))
         if (files.any { !it.isFile }) return null
         return files.map { FileStamp(it.length(), it.lastModified()) }
     }
 
     private fun cacheBook(dir: File, book: SpeechBook) {
-        cacheStamp(dir)?.let { stamp ->
+        cacheStamp(dir, book.book.format)?.let { stamp ->
             speechBookCache[book.book.id] = CachedSpeechBook(book.book, stamp, WeakReference(book))
         }
     }
@@ -670,6 +771,8 @@ class BookRepository(context: Context) {
     companion object {
         private const val TAG = "BookRepository"
         private const val BOOK_FILE = "book.epub"
+        private const val PDF_FILE = "book.pdf"
+        private const val PDF_PAGE_FILE = "pdf-page.json"
         private const val METADATA_FILE = "book.json"
         private const val INDEX_FILE = "speech.json"
         private const val LEGACY_INDEX_FILE = "speech-legacy.json"

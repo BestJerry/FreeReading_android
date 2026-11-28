@@ -7,7 +7,7 @@ import android.os.Environment
 import androidx.core.content.IntentCompat
 import java.io.File
 
-/** 解析外部打开／分享入口的 URI；这里只筛选来源，EPUB 实际内容仍由书库校验。 */
+/** 解析外部打开／分享入口的 URI；这里只筛选来源，实际文件内容仍由书库校验。 */
 object IncomingBookUri {
     /** 接受单本书的 VIEW／SEND 请求，拒绝不支持的协议及损坏的外部参数。 */
     fun fromIntent(context: Context, intent: Intent): Uri? {

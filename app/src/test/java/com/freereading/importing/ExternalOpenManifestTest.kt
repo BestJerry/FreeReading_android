@@ -35,8 +35,13 @@ class ExternalOpenManifestTest {
         assertFalse(resolves(view("https://files.example/book.epub", "application/epub+zip")))
     }
 
-    @Test fun shareAcceptsOnlyEpubMimeTypes() {
+    @Test fun pdfIsOfferedForOpenAndShareWithoutClaimingUnrelatedFiles() {
+        assertTrue(resolves(view("content://files.example/document/123", "application/pdf")))
+        assertTrue(resolves(view("content://files.example/Download/book.author.v1.PDF", "application/octet-stream")))
+        assertTrue(resolves(view("file:///sdcard/Download/book.pdf", null)))
+        assertFalse(resolves(view("https://files.example/book.pdf", "application/pdf")))
         assertTrue(resolves(Intent(Intent.ACTION_SEND).setType("application/epub+zip")))
+        assertTrue(resolves(Intent(Intent.ACTION_SEND).setType("application/pdf")))
         assertFalse(resolves(Intent(Intent.ACTION_SEND).setType("application/zip")))
         assertFalse(resolves(Intent(Intent.ACTION_SEND).setType("application/octet-stream")))
     }

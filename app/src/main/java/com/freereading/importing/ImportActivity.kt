@@ -43,7 +43,7 @@ import com.freereading.ui.Forest
 import com.freereading.ui.FreeReadingTheme
 import kotlinx.coroutines.launch
 
-/** 接收文件管理器打开或分享的 EPUB，展示导入进度，并在成功后进入阅读页。 */
+/** 接收文件管理器打开或分享的书籍，展示导入进度，并在成功后进入阅读页。 */
 class ImportActivity : ComponentActivity() {
     private val model: ExternalImportViewModel by viewModels()
 

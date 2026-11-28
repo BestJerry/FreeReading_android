@@ -33,7 +33,7 @@ sealed interface ExternalImportState {
     data object Finished : ExternalImportState
 }
 
-/** 配置变更时保留导入任务；成功导航前先将临时授权 URI 中的 EPUB 复制到本地。 */
+/** 配置变更时保留导入任务；成功导航前先将临时授权 URI 中的书籍复制到本地。 */
 class ExternalImportViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as ReadingApplication
     private val mutableState = MutableStateFlow<ExternalImportState>(ExternalImportState.Ready)

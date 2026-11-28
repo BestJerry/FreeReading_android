@@ -126,7 +126,10 @@ private fun LibraryScreen(model: LibraryViewModel, openBook: (String) -> Unit, o
     var voiceSettings by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<BookRecord?>(null) }
     val context = LocalContext.current
-    val importAction = { picker.launch(arrayOf("application/epub+zip", "application/zip", "application/octet-stream")) }
+    val importAction = {
+        picker.launch(arrayOf("application/epub+zip", "application/x-epub+zip", "application/pdf",
+            "application/zip", "application/octet-stream"))
+    }
 
     LaunchedEffect(model) { model.messages.collect { snackbar.showSnackbar(it) } }
 

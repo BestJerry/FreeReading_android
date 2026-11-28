@@ -175,6 +175,9 @@ internal class SpeechIndexStore(private val maxIndexBytes: Long = SpeechIndexLim
             throw IOException("Index does not match book metadata")
         }
         if (version == 1 && rangeFormat == false && "sources" !in rootFields) return legacy
+        if (version == VERSION && expectedCount == 0 && "sources" in rootFields && sources.isEmpty()) {
+            return emptyList()
+        }
         if (version != VERSION || rangeFormat != true || sources.isEmpty()) throw IOException("Unsupported speech index")
         val sentences = ArrayList<SpeechSentence>(count)
         val used = BooleanArray(sources.size)
@@ -404,7 +407,7 @@ internal class SpeechIndexStore(private val maxIndexBytes: Long = SpeechIndexLim
         !(Character.isHighSurrogate(text[offset - 1]) && Character.isLowSurrogate(text[offset]))
 
     private fun checkCount(count: Int) {
-        if (count !in 1..SpeechIndexLimits.MAX_SENTENCES) throw IOException("Invalid sentence count")
+        if (count !in 0..SpeechIndexLimits.MAX_SENTENCES) throw IOException("Invalid sentence count")
     }
 
     private fun checkTextBudget(count: Long) {

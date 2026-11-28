@@ -67,6 +67,7 @@ import com.freereading.ReadingApplication
 import com.freereading.audio.PlaybackHub
 import com.freereading.audio.PlaybackSnapshot
 import com.freereading.audio.TtsVoiceUiState
+import com.freereading.data.BookFormat
 import com.freereading.data.BookRecord
 import com.freereading.data.ReadingProgress
 import com.freereading.data.SpeechBook
@@ -273,6 +274,13 @@ class ReaderActivity : FragmentActivity() {
             try {
                 require(bookId.isNotEmpty()) { "未找到书籍，请返回书架重新打开。" }
                 val prepared = repository.prepareReadingBook(bookId)
+                if (prepared.record.format == BookFormat.PDF) {
+                    lifecycle.withStateAtLeast(Lifecycle.State.STARTED) {
+                        startActivity(PdfReaderActivity.intent(this@ReaderActivity, bookId, showListening))
+                        finish()
+                    }
+                    return@launch
+                }
                 val readyPublication = withContext(Dispatchers.IO) {
                     repository.readium.openForReading(repository.bookFile(bookId)).also { opened = it }
                 }

@@ -2,7 +2,9 @@ package com.freereading.data
 
 import org.readium.r2.shared.publication.Locator
 
-/** 书架元数据；id 为原始 EPUB 的 SHA-256，addedAt 用于区分同书移除后重新导入的记录。 */
+enum class BookFormat { EPUB, PDF }
+
+/** 书架元数据；id 为原始文件的 SHA-256，addedAt 用于区分同书移除后重新导入的记录。 */
 data class BookRecord(
     val id: String,
     val title: String,
@@ -11,6 +13,8 @@ data class BookRecord(
     val addedAt: Long,
     val sentenceCount: Int,
     val coverPath: String? = null,
+    val format: BookFormat = BookFormat.EPUB,
+    val pdfPageCount: Int = 0,
 )
 
 /** 原始 Readium 文本片段；由同一片段切出的句子共享定位和上下文，避免重复保存长段落。 */
@@ -75,7 +79,7 @@ class SpeechSentence {
             !(Character.isHighSurrogate(text[offset - 1]) && Character.isLowSurrogate(text[offset]))
 }
 
-/** 书籍元数据与按 EPUB 正文顺序排列的完整听书句子列表。 */
+/** 书籍元数据与按正文顺序排列的完整听书句子列表。 */
 data class SpeechBook(val book: BookRecord, val sentences: List<SpeechSentence>)
 
 /**

@@ -63,6 +63,7 @@ dependencies {
     implementation("org.readium.kotlin-toolkit:readium-shared:3.1.2")
     implementation("org.readium.kotlin-toolkit:readium-streamer:3.1.2")
     implementation("org.readium.kotlin-toolkit:readium-navigator:3.1.2")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("org.jsoup:jsoup:1.18.1")
     implementation("androidx.media3:media3-exoplayer:1.9.2")
     implementation("androidx.media3:media3-session:1.9.2")

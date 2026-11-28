@@ -110,6 +110,7 @@ internal fun ListeningPlayerScreen(
     modifier: Modifier = Modifier,
     onPreviousChapter: () -> Unit = {},
     onNextChapter: () -> Unit = {},
+    pageBased: Boolean = false,
 ) {
     val muted = ink.copy(alpha = 0.62f)
     val controlsEnabled = activeBook
@@ -175,14 +176,15 @@ internal fun ListeningPlayerScreen(
                         modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(18.dp))
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("本章进度", color = muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text(if (pageBased) "本页进度" else "本章进度",
+                            color = muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
                         Text(progressLabel, color = ink, fontSize = 12.sp)
                     }
                     Spacer(Modifier.height(9.dp))
                     LinearProgressIndicator(progress = { fraction }, color = accent,
                         trackColor = ink.copy(alpha = 0.08f),
                         modifier = Modifier.fillMaxWidth().height(3.dp).semantics {
-                            contentDescription = "章节播放进度"
+                            contentDescription = if (pageBased) "本页播放进度" else "章节播放进度"
                             stateDescription = progressLabel
                         })
                     Spacer(Modifier.height(10.dp))
@@ -203,11 +205,11 @@ internal fun ListeningPlayerScreen(
                     }
                     Row(Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        ListeningChapterButton(Icons.Default.SkipPrevious, "上一章",
+                        ListeningChapterButton(Icons.Default.SkipPrevious, if (pageBased) "上一朗读页" else "上一章",
                             enabled = activeBook && snapshot.canGoToPreviousChapter, ink = ink,
                             modifier = Modifier.weight(1f).testTag("listening-previous-chapter"),
                             onClick = onPreviousChapter)
-                        ListeningChapterButton(Icons.Default.SkipNext, "下一章",
+                        ListeningChapterButton(Icons.Default.SkipNext, if (pageBased) "下一朗读页" else "下一章",
                             enabled = activeBook && snapshot.canGoToNextChapter, ink = ink,
                             modifier = Modifier.weight(1f).testTag("listening-next-chapter"),
                             onClick = onNextChapter)
@@ -256,8 +258,10 @@ internal fun ListeningPlayerScreen(
                         }
                         OutlinedButton(onClick = onFromReading, enabled = enabled,
                             border = BorderStroke(1.dp, ink.copy(alpha = 0.14f)),
-                            modifier = Modifier.weight(1f).semantics { contentDescription = "从阅读位置开始听书" }) {
-                            Text("从阅读处听", fontSize = 12.sp, textAlign = TextAlign.Center)
+                            modifier = Modifier.weight(1f).semantics {
+                                contentDescription = if (pageBased) "从当前页开始听书" else "从阅读位置开始听书"
+                            }) {
+                            Text(if (pageBased) "从当前页听" else "从阅读处听", fontSize = 12.sp, textAlign = TextAlign.Center)
                         }
                     }
                     if (activeBook && snapshot.error != null) {
